@@ -723,19 +723,19 @@
      6. 三选一升级卡片
      ========================================================== */
   .upgrade-wrap{
-    width:min(100%,44em);
+    width:min(100%,58em);
     text-align:center;
   }
   .up-title{
-    font-size:1.45em;
+    font-size:1.7em;
     font-weight:800;
     letter-spacing:.08em;
     color:#f2fbff;
   }
   .up-title span{color:var(--cyan);}
   .up-sub{
-    margin-top:.35em;
-    font-size:.74em;
+    margin-top:.45em;
+    font-size:.82em;
     letter-spacing:.04em;
     color:var(--dim);
   }
@@ -744,19 +744,19 @@
     display:flex;
     justify-content:center;
     flex-wrap:wrap;
-    gap:.9em;
-    margin:1.35em 0 .9em;
+    gap:1.15em;
+    margin:1.6em 0 1.15em;
   }
   .card{
-    width:11.6em;
-    min-height:12.6em;
-    padding:1.15em .85em 1em;
+    width:14em;
+    min-height:15.4em;
+    padding:1.45em 1em 1.25em;
     display:flex;
     flex-direction:column;
     align-items:center;
-    gap:.28em;
+    gap:.34em;
     position:relative;
-    border-radius:12px;
+    border-radius:14px;
     border:1px solid rgba(110,170,240,.25);
     background:linear-gradient(180deg,rgba(23,36,58,.96),rgba(12,20,36,.96));
     color:var(--ink);
@@ -779,7 +779,7 @@
     content:"";
     position:absolute;
     inset:-7px;
-    border-radius:16px;
+    border-radius:18px;
     border:1px dashed var(--accent);
     pointer-events:none;
     animation:cardPulse 1.3s ease-in-out infinite;
@@ -805,27 +805,27 @@
     border-radius:4px;
   }
   .card canvas{
-    width:3em;
-    height:3em;
-    margin-bottom:.25em;
+    width:4em;
+    height:4em;
+    margin-bottom:.35em;
   }
   .card-tag{
-    font-size:.66em;
+    font-size:.74em;
     letter-spacing:.12em;
     font-weight:700;
   }
   .card-name{
-    font-size:.95em;
+    font-size:1.08em;
     font-weight:700;
     letter-spacing:.04em;
   }
   .card-desc{
-    font-size:.68em;
-    line-height:1.5;
+    font-size:.78em;
+    line-height:1.55;
     color:var(--dim);
   }
   .up-hint{
-    font-size:.68em;
+    font-size:.76em;
     letter-spacing:.1em;
     color:rgba(139,166,198,.65);
   }
@@ -3495,7 +3495,8 @@ window.addEventListener('gamepadconnected', function (e) {
 
   /* 把升级卡片画成小图标：全部用 Canvas 绘制 */
   function paintCardIcon(cv, kind, color) {
-    var size = 56;
+    /* 卡片放大后图标同步加大：56 → 72，保持 4em 显示尺寸下的清晰度 */
+    var size = 72;
     var dpr = Math.min(window.devicePixelRatio || 1, 2);
     cv.width = size * dpr;
     cv.height = size * dpr;
@@ -3511,6 +3512,13 @@ window.addEventListener('gamepadconnected', function (e) {
     var cx = size / 2;
     var cy = size / 2;
     var i;
+
+    /* 图标放大后按比例整体缩放：size=56 → 72（72/56 = 9/7）。
+       所有图标路径按 56 基准中心 (28,28) 绘制，把该中心映射到新画布中心 (cx,cy)：
+       translate(cx - 28*K, cy - 28*K)，避免手工重写每个绝对坐标。 */
+    var K = size / 56;
+    g.translate(cx - 28 * K, cy - 28 * K);
+    g.scale(K, K);
 
     if (kind === 'rate') {
       for (i = 0; i < 3; i++) {
