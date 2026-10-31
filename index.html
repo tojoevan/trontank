@@ -1162,7 +1162,11 @@
     bulletR: 4,
     /* 受击无敌帧放宽到 1.2 秒，被围住时有机会脱身 */
     hitInv: 1.2,
-    reviveRatio: 0.85
+    reviveRatio: 0.85,
+    /* 拾取手感（变量集中控制，便于后期微调） */
+    pickupRadius: 22,       // 触发的判定半径：与玩家半径相加。原 9（≈24px 才能捡），现 22（≈37px，路过即可）
+    pickupAttractR: 72,     // 磁吸半径：玩家进入此范围，掉落物主动飞向角色（px）
+    pickupAttractSpeed: 280 // 磁吸最大速度（px/s），越靠近吸得越快
   };
 
   /* ----------------------------------------------------------
@@ -1983,10 +1987,11 @@
   /* ==========================================================
      4.4 宝箱掉落物：武器与补给共用同一套拾取流程
      1) 碰到宝箱 → 开箱，掉出 1 件可拾取物并弹开
-     2) 掉落物有 0.45 秒“落地保护”，落地后玩家贴近约 24px 才会拾取
-     3) 未被拾取的掉落物保留到本波结束，下一波随宝箱一起刷新
+     2) 掉落物有 0.45 秒“落地保护”，落地后才会被拾取
+     3) 玩家进入磁吸半径（CFG.pickupAttractR）时，掉落物主动飞向最近玩家，无需精准走到跟前
+     4) 未被拾取的掉落物保留到本波结束，下一波随宝箱一起刷新
      ========================================================== */
-  var PICKUP_RADIUS = 9;       // 与玩家半径相加约 24px：必须走到道具跟前，避免隔空吸走
+  /* 拾取判定半径与磁吸强度统一由 CFG.pickupRadius / pickupAttractR / pickupAttractSpeed 控制（见上） */
   var PICKUP_ARM = 0.45;       // 落地保护时间，避免开箱瞬间被立刻吸走
   var CHEST_RESPAWN = 15;      // 宝箱开启后重新刷新的秒数
   var CHEST_ARM = 0.6;         // 刷新后的短暂保护，防止站在箱子上瞬间连开
@@ -2133,6 +2138,9 @@
   }
 
   function updatePickups(dt) {
+    var attractR = CFG.pickupAttractR;
+    var attractSpeed = CFG.pickupAttractSpeed;
+    var pickR = CFG.pickupRadius;
     for (var i = pickups.length - 1; i >= 0; i--) {
       var pk = pickups[i];
       pk.x += pk.vx * dt;
@@ -2142,21 +2150,37 @@
       pk.x = clamp(pk.x, 24, WW - 24);
       pk.y = clamp(pk.y, 24, WH - 24);
 
-      /* 掉落物不与墙柱重叠：否则可能落进柱心，玩家永远够不到，关卡也就永远结束不了 */
-      resolveObstacles(pk);
+      if (pk.arm > 0) { pk.arm -= dt; resolveObstacles(pk); continue; }
 
-      if (pk.arm > 0) { pk.arm -= dt; continue; }
-
+      /* 找最近的、能动的玩家：用于磁吸目标与拾取判定（双人各自吸引附近的掉落物） */
+      var best = null, bestD2 = Infinity;
       for (var j = 0; j < players.length; j++) {
         var p = players[j];
         if (!p.alive || p.downed) { continue; }
-        var rr = p.r + PICKUP_RADIUS;
-        if (dist2(p.x, p.y, pk.x, pk.y) < rr * rr) {
-          collectPickup(pk, p);
+        var d2 = dist2(p.x, p.y, pk.x, pk.y);
+        if (d2 < bestD2) { bestD2 = d2; best = p; }
+      }
+
+      if (best) {
+        var d = Math.sqrt(bestD2);
+        /* 磁吸：进入 pickupAttractR 后，掉落物主动飞向该玩家；越近吸得越快 */
+        if (d < attractR && d > 0.001) {
+          var pull = attractSpeed * (1 - d / attractR);
+          var ang = Math.atan2(best.y - pk.y, best.x - pk.x);
+          pk.x += Math.cos(ang) * pull * dt;
+          pk.y += Math.sin(ang) * pull * dt;
+        }
+        /* 触达拾取半径即入袋（无需精准走到跟前） */
+        var rr = best.r + pickR;
+        if (bestD2 < rr * rr) {
+          collectPickup(pk, best);
           pickups.splice(i, 1);
-          break;
+          continue;
         }
       }
+
+      /* 掉落物不与墙柱重叠：否则可能落进柱心，玩家永远够不到，关卡也就永远结束不了 */
+      resolveObstacles(pk);
     }
   }
 
@@ -2176,7 +2200,7 @@
     for (var pi = 0; pi < players.length; pi++) {
       var pl = players[pi];
       if (!pl.alive || pl.downed) { continue; }
-      var safe = pl.r + PICKUP_RADIUS + 8;
+      var safe = pl.r + CFG.pickupRadius + 8;
       if (dist2(px, py, pl.x, pl.y) < safe * safe) {
         popAngle += Math.PI;
         px = ch.x + Math.cos(popAngle) * 44;
