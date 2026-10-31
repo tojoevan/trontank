@@ -1170,7 +1170,10 @@
     /* 瞄准辅助（小角度自动修正）：玩家射线与敌人偏差≤阈值时，子弹转向敌人（最多修正阈值） */
     aimAssistEnabled: true, // 总开关，一键回退
     aimAssistAngle: 10,     // 默认最大修正角（度）；不同武器可在 WEAPONS 里用 aimAssist 单独覆盖
-    aimAssistRange: 360     // 只辅助此距离内的敌人（px）；0 = 不限距离
+    aimAssistRange: 360,    // 只辅助此距离内的敌人（px）；0 = 不限距离
+    /* 斜向释放缓冲：斜向→仅剩单轴时冻结一小段时间，避免松开双键的一瞬被判成正方向、
+       导致 45° 瞄准被掰平。同时兼容键盘与手柄摇杆。0 = 关闭 */
+    moveReleaseGrace: 0.08  // 秒
   };
 
   /* ----------------------------------------------------------
@@ -1965,6 +1968,8 @@
       muzzle: 0,
       aimFlash: 0,           // 瞄准辅助提示线剩余时间
       aimAng: 0,            // 上次修正后的射击角（用于画提示线）
+      dirGrace: 0,           // 斜向释放缓冲剩余时间
+      lastMV: [0, 0],        // 上一帧实际生效的方向分量（-1/0/1），用于识别「斜向→单轴」
       moving: false,
       shield: 0,
       alive: true,
@@ -2245,6 +2250,30 @@
       if (keys[m.up] || g.up) { ay -= 1; }
       if (keys[m.down] || g.down) { ay += 1; }
     }
+
+    /* 斜向释放缓冲：上一帧斜向、当前只剩单轴时，先冻结移动并保持原朝向。
+       键盘松开双键必然有时差、手柄摇杆回中也会先跨过单轴，两者都会把 45° 瞄准掰平；
+       这里统一用“等待对方一起松开”的时间窗消掉该瞬态。CFG.moveReleaseGrace = 0 关闭。 */
+    var rawX = ax, rawY = ay;
+    if (CFG.moveReleaseGrace > 0) {
+      var wasDiag = (p.lastMV[0] !== 0 && p.lastMV[1] !== 0);
+      if (p.dirGrace > 0) {
+        if (rawX === 0 && rawY === 0) {
+          p.dirGrace = 0;                    // 已完全松手：干净停止，朝向保持斜向
+        } else if (rawX !== 0 && rawY !== 0) {
+          p.dirGrace = 0;                    // 重新回到斜向：立即恢复
+        } else {
+          p.dirGrace -= dt;
+          if (p.dirGrace < 0) { p.dirGrace = 0; }
+          rawX = 0; rawY = 0;                // 缓冲中：冻结移动，保持 45° 朝向
+        }
+      } else if (wasDiag && (rawX !== 0 || rawY !== 0) && rawX * rawY === 0) {
+        p.dirGrace = CFG.moveReleaseGrace;   // 斜向 → 单轴：开始缓冲
+        rawX = 0; rawY = 0;
+      }
+    }
+    ax = rawX; ay = rawY;
+    p.lastMV[0] = ax; p.lastMV[1] = ay;
 
     p.moving = (ax !== 0 || ay !== 0);
     if (p.moving) {
