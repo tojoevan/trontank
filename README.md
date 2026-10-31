@@ -24,6 +24,7 @@
   - 纯静态站点即可，**无需后端、数据库或运行时**。
   - ⚠️ **必须 HTTPS（或 `localhost`）访问**。手柄的 **WebHID API 只在安全上下文下可用**；用 `file://` 双击打开或纯 `http://域名` 访问时，`navigator.hid` 会被浏览器禁用，页面会提示改用 `http://localhost` 或 https。
   - 宝塔部署：新建静态站点 → 上传 `index.html` → 开启 SSL（Let's Encrypt）→ 访问 `https://你的域名/`。
+  - **当前线上部署**：`67.215.237.94` → `/www/wwwroot/tron.zhaoyouhan.com/`，访问 `https://tron.zhaoyouhan.com`。**改完本地 `index.html` 必须重新上传覆盖才会生效。**
 
 ---
 
@@ -143,6 +144,20 @@
 - **WebHID 过滤设备**（`requestGamepad` 的 `filters`）：Switch `vendorId 0x057e` 的 `productId 0x2009`(Pro Controller) / `0x2006`(Joy-Con L) / `0x2007`(Joy-Con R)。要支持其他蓝牙手柄，在此加 filter 并在 `hidBuildPseudo` 里加对应报告解析。
 - **标准手柄按钮索引**（`gpRead`）：A=0, B=1, X=2, Y=3, ZR=7, Minus=8, Plus=9, 十字键 12–15。
 - **手柄归属** `gamepadTarget`：取值 `'p1'` / `'p2'` / `'both'`（默认 `'both'`）；单人模式恒为 P1。配置存于 `bqs.gpTarget.v1`。
+- **诊断开关**：URL 加 `?debug=hid`（如 `https://域名/?debug=hid`）可在左下角实时显示原始报文前 12 字节 + 解析后的双摇杆值，手柄异常时优先用它取证。
+
+### 6.9 Switch `0x30` 报告解析口径（改这里前务必读）
+`hidBuildPseudo` 依赖两个易错事实，**改错任意一个都会让手柄完全失控**：
+
+1. **WebHID 的 `inputreport.data` 不含 reportId**（MDN 明确），所以报文索引是「去掉报告号」的编号：
+   - `data[2]` = **face 组**：`0x01 Y`、`0x02 X`、`0x04 B`、`0x08 A`、`0x40 R`、`0x80 ZR`
+   - `data[3]` = **Shared 组**：`0x01 Minus`、`0x02 Plus`、`0x10 Home`、`0x20 Capture`、`0x80 ChargingGrip`
+   - `data[4]` = **左/方向组**：`0x01 下`、`0x02 上`、`0x04 右`、`0x08 左`
+   - ⚠️ `data[3] & 0x80` 是 **Charging Grip 状态位，绝不能当 ZR 读**——否则会表现为「一直自动射击」。
+2. **12 位摇杆重组公式**（左右摇杆分别占 3 字节：`5-7` / `8-10`）：
+   - 横向 `X = byte0 | ((byte1 & 0x0F) << 8)`
+   - 竖向 `Y = ((byte1 & 0xF0) >> 4) | (byte2 << 4)` ← ⚠️ 竖向是 `<< 4` 而不是 `<< 8`
+   - 写成 `(高半字节 << 8) | byte2` 时，中心值会解码成 128 → 归一化后恒为 **−1（一直向上冲）**。中心 ~2048、满偏 ~1280，轻微中心偏移由 `gpRead` 的 0.35 死区吸收，无需逐台校准。
 
 ---
 
@@ -151,7 +166,8 @@
 - **WebHID 仅 Chrome / Edge 支持**，Safari 无效（按钮会提示「此浏览器不支持」）。
 - **务必 HTTPS/localhost**：否则手柄完全不可用（`file://` 与纯 http 都会被禁）。
 - Switch 的 **Home 键是系统保留键**，网页层无法拦截（属正常，不影响游戏）。
-- 手柄键位用的是标准索引假设；若实测某键不对，改 `gpRead` / `hidBuildPseudo` 里对应的位/索引即可（一行级改动）。
+- **Safari 无法使用 Pro Controller 手柄**：Safari 不支持 WebHID，而 macOS 又不把该手柄暴露给 Gamepad API，页面侧无回退余地 → 只能用 Chrome / Edge。
+- 手柄键位用的是标准索引假设；若实测某键不对，改 `gpRead` / `hidBuildPseudo` 里对应的位/索引即可（一行级改动）。先用 `?debug=hid` 取证再改。
 
 ---
 

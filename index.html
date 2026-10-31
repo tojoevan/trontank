@@ -4334,31 +4334,64 @@
   /* 双人模式下手柄归谁：'p1' = 1P 用柄（2P 键盘）；'p2' = 2P 用柄（1P 键盘）；'both' = 双柄各一。单人模式固定 P1。 */
   var gamepadTarget = store.get('bqs.gpTarget.v1', 'both');
 
+  /* ?debug=hid 诊断开关：把原始报文与解析结果打到页面，便于核对真机数据 */
+  var HID_DEBUG = (location.search || '').indexOf('debug=hid') >= 0;
+  var hidDbgEl = null;
+  function hidDebugDump(data, st) {
+    if (!hidDbgEl) {
+      hidDbgEl = document.createElement('pre');
+      hidDbgEl.style.cssText = 'position:fixed;left:12px;bottom:12px;z-index:120;margin:0;padding:10px 12px;max-width:62vw;border-radius:10px;background:rgba(8,14,24,.9);color:#9fe8c0;font:11px/1.5 ui-monospace,Menlo,Consolas,monospace;border:1px solid rgba(120,200,160,.35);pointer-events:none;white-space:pre-wrap;';
+      document.body.appendChild(hidDbgEl);
+    }
+    var n = Math.min(data.byteLength, 12);
+    var hex = [];
+    for (var i = 0; i < n; i++) {
+      var v = data.getUint8(i).toString(16);
+      hex.push((v.length < 2 ? '0' : '') + v);
+    }
+    function hx(idx) { return ('0' + data.getUint8(idx).toString(16)).slice(-2); }
+    hidDbgEl.textContent =
+      'WebHID raw report len=' + data.byteLength + '\n' +
+      'bytes[0..' + (n - 1) + '] = ' + hex.join(' ') + '\n' +
+      'face=0x' + hx(2) + '  shared=0x' + hx(3) + '  dpad=0x' + hx(4) + '\n' +
+      'lx=' + st.lx.toFixed(2) + '  ly=' + st.ly.toFixed(2) +
+      '  rx=' + st.rx.toFixed(2) + '  ry=' + st.ry.toFixed(2) + '\n' +
+      '（摇杆静止时四项应≈0）';
+  }
+
   function hidBuildPseudo(data) {
     if (data.byteLength < 11) { return null; }
-    var b1 = data.getUint8(2);   // 左键组：下 上 右 左 / SL SR L ZL
-    var b2 = data.getUint8(3);   // 右键组：Y X B A / SR SL R ZR
-    var b3 = data.getUint8(4);   // 系统键：- + / Home / Capture
+    /* WebHID 的 data 不含 reportId（MDN 明确），因此字节索引是 0x30 报告去掉报告号后的编号：
+         data[2] = 右键组  Y X B A / SR SL R ZR
+         data[3] = 共享组  Minus Plus R摇杆 L摇杆 Home Capture -- ChargingGrip
+         data[4] = 左键组  下 上 右 左 / SR SL L ZL
+       ⚠ data[3] 的 0x80 是「Charging Grip」状态位，绝不能当 ZR 读，否则会常驻触发射击。 */
+    var bFace = data.getUint8(2);
+    var bShared = data.getUint8(3);
+    var bDpad = data.getUint8(4);
     var bits = new Array(16).fill(false);
-    bits[0] = !!(b2 & 0x08); // A
-    bits[1] = !!(b2 & 0x04); // B
-    bits[2] = !!(b2 & 0x02); // X
-    bits[3] = !!(b2 & 0x01); // Y
-    bits[7] = !!(b2 & 0x80); // ZR
-    bits[8] = !!(b3 & 0x01); // - (Minus)
-    bits[9] = !!(b3 & 0x02); // + (Plus)
-    bits[12] = !!(b1 & 0x02); // ↑
-    bits[13] = !!(b1 & 0x01); // ↓
-    bits[14] = !!(b1 & 0x08); // ←
-    bits[15] = !!(b1 & 0x04); // →
+    bits[0] = !!(bFace & 0x08);     // A
+    bits[1] = !!(bFace & 0x04);     // B
+    bits[2] = !!(bFace & 0x02);     // X
+    bits[3] = !!(bFace & 0x01);     // Y
+    bits[7] = !!(bFace & 0x80);     // ZR
+    bits[8] = !!(bShared & 0x01);   // - (Minus)
+    bits[9] = !!(bShared & 0x02);   // + (Plus)
+    bits[12] = !!(bDpad & 0x02);    // ↑
+    bits[13] = !!(bDpad & 0x01);    // ↓
+    bits[14] = !!(bDpad & 0x08);    // ←
+    bits[15] = !!(bDpad & 0x04);    // →
     var buttons = bits.map(function (v) { return { pressed: v, value: v ? 1 : 0 }; });
-    /* 12 位摇杆（0x30 报告压缩格式），中心 ~2048，满偏 ~1280 */
-    function s12(lo, hi) { return lo | ((hi & 0x0f) << 8); }
+    /* 12 位摇杆：X 低 8 位在 byte0、高 4 位在 byte1 低半字节；
+       Y 低 4 位在 byte1 高半字节、高 8 位在 byte2（错写为 << 8 | byte2 会导致静止时也读作满舵）。 */
+    function s12X(lo, mixed) { return lo | ((mixed & 0x0f) << 8); }        // 横向
+    function s12Y(mixed, hi) { return ((mixed & 0xf0) >> 4) | (hi << 4); } // 竖向
     function norm(v) { return Math.max(-1, Math.min(1, (v - 2048) / 1280)); }
-    var lx = norm(s12(data.getUint8(5), data.getUint8(6)));
-    var ly = norm((((data.getUint8(6) & 0xf0) >> 4) << 8) | data.getUint8(7));
-    var rx = norm(s12(data.getUint8(8), data.getUint8(9)));
-    var ry = norm((((data.getUint8(9) & 0xf0) >> 4) << 8) | data.getUint8(10));
+    var lx = norm(s12X(data.getUint8(5), data.getUint8(6)));
+    var ly = norm(s12Y(data.getUint8(6), data.getUint8(7)));
+    var rx = norm(s12X(data.getUint8(8), data.getUint8(9)));
+    var ry = norm(s12Y(data.getUint8(9), data.getUint8(10)));
+    if (HID_DEBUG) { hidDebugDump(data, { lx: lx, ly: ly, rx: rx, ry: ry }); }
     return { buttons: buttons, axes: [lx, ly, rx, ry] };
   }
 
