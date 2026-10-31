@@ -1296,9 +1296,13 @@ window.addEventListener('gamepadconnected', function (e) {
     aimAssistEnabled: true, // 总开关，一键回退
     aimAssistAngle: 10,     // 默认最大修正角（度）；不同武器可在 WEAPONS 里用 aimAssist 单独覆盖
     aimAssistRange: 360,    // 只辅助此距离内的敌人（px）；0 = 不限距离
-    /* 斜向释放缓冲：斜向→仅剩单轴时冻结一小段时间，避免松开双键的一瞬被判成正方向、
-       导致 45° 瞄准被掰平。同时兼容键盘与手柄摇杆。0 = 关闭 */
-    moveReleaseGrace: 0.08, // 秒
+    /* 斜向释放保护：斜向→仅剩单轴时的一小段时间内「只保护朝向、不冻结移动」，
+       避免松开双键的一瞬被判成正方向、把 45° 瞄准掰平。位移仍照常跟随输入，
+       因此斜向转正向没有迟滞。同时兼容键盘与手柄摇杆。0 = 关闭 */
+    moveReleaseGrace: 0.08, // 秒（朝向保护窗口）
+    /* 回退开关：保护期内连移动一起冻结（默认关）。开着能消掉松手瞬态的几像素位移，
+       但代价是每次斜向转正向都迟滞约 moveReleaseGrace，手感发黏 */
+    moveReleaseFreeze: false,
     /* WebHID 摇杆竖轴取反。Nintendo 0x30 报告的原始值是「向上推 = 数值变大」，
        而游戏/Gamepad API 用屏幕坐标（向上 = 负值），故必须取反，否则上下颠倒。
        ⚠ 只作用于 WebHID 通路；标准 Gamepad API 由系统/浏览器已标准化，不受此影响。
@@ -2388,25 +2392,33 @@ window.addEventListener('gamepadconnected', function (e) {
       if (keys[m.down] || g.down) { ay += 1; }
     }
 
-    /* 斜向释放缓冲：上一帧斜向、当前只剩单轴时，先冻结移动并保持原朝向。
+    /* 斜向释放保护：上一帧斜向、当前只剩单轴时，进入一小段“朝向保护窗口”。
        键盘松开双键必然有时差、手柄摇杆回中也会先跨过单轴，两者都会把 45° 瞄准掰平；
-       这里统一用“等待对方一起松开”的时间窗消掉该瞬态。CFG.moveReleaseGrace = 0 关闭。 */
+       这里统一在该窗口内**保持原朝向不改**，但位移照常跟随输入（否则斜向转正向会有迟滞）。
+       ⚠ 只冻结朝向、不冻结移动；想退回旧的“连移动一起冻结”请开 CFG.moveReleaseFreeze。
+       CFG.moveReleaseGrace = 0 则整段关闭。 */
     var rawX = ax, rawY = ay;
+    var holdFacing = false;                  // 本帧是否处于朝向保护中
     if (CFG.moveReleaseGrace > 0) {
       var wasDiag = (p.lastMV[0] !== 0 && p.lastMV[1] !== 0);
       if (p.dirGrace > 0) {
         if (rawX === 0 && rawY === 0) {
-          p.dirGrace = 0;                    // 已完全松手：干净停止，朝向保持斜向
+          p.dirGrace = 0;                    // 已完全松手：停止移动，朝向保持斜向
         } else if (rawX !== 0 && rawY !== 0) {
-          p.dirGrace = 0;                    // 重新回到斜向：立即恢复
+          p.dirGrace = 0;                    // 重新回到斜向：立即恢复正常
         } else {
           p.dirGrace -= dt;
-          if (p.dirGrace < 0) { p.dirGrace = 0; }
-          rawX = 0; rawY = 0;                // 缓冲中：冻结移动，保持 45° 朝向
+          if (p.dirGrace <= 0) {
+            p.dirGrace = 0;                  // 保护到期：这一帧就恢复正常朝向
+          } else {
+            holdFacing = true;               // 单轴瞬态：照常移动，但先不改写朝向
+            if (CFG.moveReleaseFreeze) { rawX = 0; rawY = 0; }
+          }
         }
       } else if (wasDiag && (rawX !== 0 || rawY !== 0) && rawX * rawY === 0) {
-        p.dirGrace = CFG.moveReleaseGrace;   // 斜向 → 单轴：开始缓冲
-        rawX = 0; rawY = 0;
+        p.dirGrace = CFG.moveReleaseGrace;   // 斜向 → 单轴：开始朝向保护
+        holdFacing = true;
+        if (CFG.moveReleaseFreeze) { rawX = 0; rawY = 0; }
       }
     }
     ax = rawX; ay = rawY;
@@ -2417,9 +2429,9 @@ window.addEventListener('gamepadconnected', function (e) {
       var len = Math.hypot(ax, ay);
       ax /= len;
       ay /= len;
-      /* 朝向跟随最后一次移动方向，子弹沿该方向发射 */
-      p.dirX = ax;
-      p.dirY = ay;
+      /* 朝向跟随最后一次移动方向，子弹沿该方向发射；
+         朝向保护期内保持原朝向（斜向），避免松手时差把 45° 掰平——但位移不受影响 */
+      if (!holdFacing) { p.dirX = ax; p.dirY = ay; }
       p.x += ax * p.speed * dt;
       p.y += ay * p.speed * dt;
     }
