@@ -145,9 +145,21 @@
 `fuse` 0.7 / `speed` 430 / `radius` 96 / `selfMax` 55 / `selfMin` 12 / `enemyMax` 130 / `enemyMin` 45 / `maxCarry` 3（伤敌也伤己，中心伤害最高、边缘递减）。
 
 ### 6.7 世界与敌人
-- 世界尺寸：`WW = 1728`, `WH = 972`。
+- **视口与世界都是动态的**（`setupCanvas()` 里按 `#stage` 的 CSS 尺寸计算，不再固定 960×540）：
+  - `DESIGN_DENSITY = 1100/960 ≈ 1.146` —— 每逻辑单位对应的 CSS 像素。**保持恒定**是关键：角色/UI 在屏幕上的相对大小不变，且 `canvas 物理像素 = #stage CSS 尺寸 × DPR`，即 **1:1 原生渲染，放大不糊**。
+  - `WORLD_MUL = 1.8` —— 世界 = 视口 × 该倍数（两方向同比）。同比的意义是让「屏幕内敌人密度」 `V/A = 1/1.8² ≈ 0.3086` **恒定**，换屏幕不会改变难度。
+  - `MAX_PHYSICAL_PIXELS = 5.8e6` —— 填充率预算，仅超大屏/4K 全屏才轻微降采样保护帧率（常规笔记本全程 1:1）。
+  - `BASE_WW/BASE_WH = 1728/972` —— 地形坐标的设计基准（**不是**当前世界尺寸）。
 - 敌人类型（`enemyTypes`）：`bit`(hp10,spd92,r12,score100) / `block`(hp22,spd62,r13,score150) / `tri`(hp16,spd112,r14,score170) / `hex`(hp32,spd56,r17,score230)。
 - 地形布局：`TERRAIN_SETS`（每波的重生点、武器架、宝箱坐标，纯数据，可增删）。
+  ⚠️ **这些坐标是 BASE_WW×BASE_WH 下的绝对值**，`buildObstacles()` 会按 `kx = WW/BASE_WW`、`ky = WH/BASE_WH` 缩放后再实例化（圆形半径用 `min(kx,ky)` 防变形）。**新增地形数据一律按 1728×972 写，不要按当前世界尺寸写。**
+  ⚠️ 双人出生点同理，已改为按比例（`WW × 480/1728`、`WW × 1248/1728`），不要改回绝对坐标。
+
+### 6.7.1 舞台尺寸（CSS）
+- 桌面（≥761px）：`width: min(98vw, 96vh*2.2)`、`height: min(96vh, 98vw/1.2)`，去掉 16:9 固定比例 → 屏幕利用率约 **94%**（改造前受 1100px 上限限制仅约 52%）。宽高比被夹在 1.2–2.2，避免超宽屏把战场拉成细带。
+- 窄屏（<761px）：维持 `aspect-ratio:16/9` 原逻辑，避免手机竖屏视野被拉成长条。
+- 全屏：`object-fit:fill`（逻辑分辨率已跟随比例，无需 contain，否则会留细黑边）；进出全屏监听 `fullscreenchange` 重算（此时窗口尺寸不变、变的是 `#stage`）。
+- 世界尺寸变化后由 `clampEntitiesToWorld()` 把实体拉回新边界；地形不立即重建，下一波 `buildObstacles` 时自动适配。
 
 ### 6.8 手柄配置
 - **WebHID 过滤设备**（`requestGamepad` 的 `filters`）：Switch `vendorId 0x057e` 的 `productId 0x2009`(Pro Controller) / `0x2006`(Joy-Con L) / `0x2007`(Joy-Con R)。要支持其他蓝牙手柄，在此加 filter 并在 `hidBuildPseudo` 里加对应报告解析。

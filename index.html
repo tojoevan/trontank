@@ -33,6 +33,7 @@
   }
   #stage{
     position:relative;
+    /* 窄屏（默认）：维持 16:9，避免手机竖屏时视野被拉成细长条 */
     width:min(96vw,160vh,1100px);
     aspect-ratio:16/9;
     border-radius:14px;
@@ -46,6 +47,16 @@
     user-select:none;
     -webkit-user-select:none;
   }
+  /* 桌面铺满：留 2% 窄边（保留圆角与外阴影），去掉 1100px 上限与固定 16:9。
+     逻辑分辨率会跟随该尺寸等比变化（见 setupCanvas），因此放大不糊。
+     宽高比限制在 1.2~2.2：超宽屏不会把战场拉成细带，过高窗口也不会变成竖井。 */
+  @media (min-width:761px){
+    #stage{
+      width:min(98vw, calc(96vh * 2.2));
+      height:min(96vh, calc(98vw / 1.2));
+      aspect-ratio:auto;
+    }
+  }
   canvas#game{display:block;width:100%;height:100%;}
 
   /* 全屏：铺满视口，画布用 object-fit 保持 16:9（上下或左右留黑边，不拉伸） */
@@ -56,9 +67,10 @@
     max-width:none;
     border-radius:0;
   }
+  /* 逻辑分辨率已跟随 #stage 比例，画布固有比例与显示比例一致，无需 contain（会留细黑边） */
   #stage:fullscreen canvas#game,
   #stage:-webkit-full-screen canvas#game{
-    object-fit:contain;
+    object-fit:fill;
   }
 
   /* ==========================================================
@@ -1009,11 +1021,39 @@ window.addEventListener('gamepadconnected', function (e) {
   /* ==========================================================
      0. 基础工具
      ========================================================== */
-  var W = 960;                 // 视口（逻辑分辨率）宽
-  var H = 540;                 // 视口（逻辑分辨率）高
+  var W = 960;                 // 视口（逻辑分辨率）宽，随 #stage 尺寸动态变化
+  var H = 540;                 // 视口（逻辑分辨率）高，随 #stage 尺寸动态变化
   /* 实际战场比视口大 1.8 倍，靠相机跟随展示，玩家可以跑到更远的区域 */
-  var WW = 1728;               // 世界宽
-  var WH = 972;                // 世界高
+  var WORLD_MUL = 1.8;         // 世界 = 视口 × 该倍数（两方向同比，保证屏幕内敌人密度恒定）
+  var BASE_WW = 1728;          // 地形坐标的设计基准世界尺寸（TERRAIN_SETS 按此硬编码）
+  var BASE_WH = 972;
+  var WW = 1728;               // 世界宽（动态）
+  var WH = 972;                // 世界高（动态）
+
+  /* 世界尺寸跟随视口：宽屏看到更宽战场，且同比放大使「屏幕内敌人密度」保持不变 */
+  function syncWorldSize() {
+    WW = Math.round(W * WORLD_MUL);
+    WH = Math.round(H * WORLD_MUL);
+  }
+
+  /* 世界尺寸变化（窗口缩放 / 进出全屏）后，把已有实体拉回新边界，避免越界卡死。
+     ⚠ 本函数在实体数组初始化之前就会随 setupCanvas 调用，故必须做 Array 防御。
+     地形不在此重建：它每 2 波随 buildObstacles 重构，届时自动按新世界缩放。 */
+  function clampEntitiesToWorld() {
+    var i, o;
+    var lists = [players, enemies, pickups, chests, mounts];
+    for (var k = 0; k < lists.length; k++) {
+      var arr = lists[k];
+      if (!Array.isArray(arr)) { continue; }
+      for (i = 0; i < arr.length; i++) {
+        o = arr[i];
+        if (!o) { continue; }
+        var m = (o.r || 0) + 20;
+        o.x = clamp(o.x, m, WW - m);
+        o.y = clamp(o.y, m, WH - m);
+      }
+    }
+  }
   var TAU = Math.PI * 2;
 
   /* 相机：世界坐标中的视口左上角 */
@@ -1035,17 +1075,30 @@ window.addEventListener('gamepadconnected', function (e) {
   var MAX_RENDER_SCALE = 2.5;
   var renderScale = 1;
 
-  /* 按 #stage 的 CSS 尺寸计算渲染倍率；所有绘制仍使用 960×540 逻辑坐标，
-     因此除本函数外无需改动任何调用点。
+  /* 设计密度：每个「逻辑单位」对应多少 CSS 像素。保持恒定是关键——
+     ① 角色/UI 在屏幕上的相对大小不变（不会变成小人在大场地里跑）；
+     ② canvas 物理像素 = #stage 的 CSS 尺寸 × DPR，即 1:1 原生渲染，放大不糊。
+     基准取改造前的实际观感：1100 CSS 宽 / 960 逻辑宽 ≈ 1.146。 */
+  var DESIGN_DENSITY = 1100 / 960;
+  /* 填充率预算：超过该物理像素总数才轻微降采样，用于保护超大屏/4K 全屏的帧率。
+     常规笔记本（1512×857 @DPR2 ≈ 5.2M）仍在预算内，全程 1:1 原生。 */
+  var MAX_PHYSICAL_PIXELS = 5.8e6;
+
+  /* 按 #stage 的 CSS 尺寸决定逻辑分辨率与渲染倍率；所有绘制都用 W/H 变量，
+     因此除本函数外无需改动任何调用点（全文件无硬编码 960/540 的绘制代码）。
      注意：改 canvas.width/height 会重置 2D 上下文状态，故每次都重设线型。 */
   function setupCanvas() {
     var stageEl = document.getElementById('stage');
-    var sw = (stageEl && stageEl.clientWidth) ? stageEl.clientWidth : W;
-    var sh = (stageEl && stageEl.clientHeight) ? stageEl.clientHeight : H;
-    /* 与 canvas 的 object-fit:contain 保持一致：取宽高两个方向中较小的缩放比 */
-    var fit = Math.min(sw / W, sh / H);
-    var s = fit * DPR;
+    var sw = (stageEl && stageEl.clientWidth) ? stageEl.clientWidth : 1100;
+    var sh = (stageEl && stageEl.clientHeight) ? stageEl.clientHeight : 619;
+    /* 逻辑分辨率跟随显示尺寸，比例由 DESIGN_DENSITY 锁定 */
+    W = Math.max(700, Math.round(sw / DESIGN_DENSITY));
+    H = Math.max(400, Math.round(sh / DESIGN_DENSITY));
+    var s = DESIGN_DENSITY * DPR;
     if (!isFinite(s) || s <= 0) { s = DPR; }
+    /* 填充率保护：只在超出预算时才降采样，常规屏幕不受影响 */
+    var phys = (W * s) * (H * s);
+    if (phys > MAX_PHYSICAL_PIXELS) { s *= Math.sqrt(MAX_PHYSICAL_PIXELS / phys); }
     s = Math.min(s, MAX_RENDER_SCALE);
     renderScale = s;
     canvas.width = Math.round(W * s);
@@ -1053,6 +1106,8 @@ window.addEventListener('gamepadconnected', function (e) {
     ctx.setTransform(s, 0, 0, s, 0, 0);
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
+    syncWorldSize();
+    clampEntitiesToWorld();
   }
   setupCanvas();
 
@@ -1693,16 +1748,21 @@ window.addEventListener('gamepadconnected', function (e) {
     terrainLabel = TERRAIN_SETS[idx].name;
 
     obstacles = [];
+    /* 地形坐标是按 BASE_WW×BASE_WH 硬编码的，世界随视口变化后必须同比缩放，
+       否则布局会挤到一角或跑出边界。圆半径用 kx/ky 的较小值，避免被拉成椭圆。 */
+    var kx = WW / BASE_WW;
+    var ky = WH / BASE_WH;
+    var kr = Math.min(kx, ky);
     var list = TERRAIN_SETS[idx].obstacles;
     for (var i = 0; i < list.length; i++) {
       var src = list[i];
       obstacles.push({
         type: src.type,
-        x: src.x,
-        y: src.y,
-        w: src.w || 0,
-        h: src.h || 0,
-        r: src.r || 0,
+        x: src.x * kx,
+        y: src.y * ky,
+        w: (src.w || 0) * kx,
+        h: (src.h || 0) * ky,
+        r: (src.r || 0) * kr,
         hp: src.hp || 0,
         maxHp: src.hp || 0,
         dead: false,
@@ -1718,8 +1778,8 @@ window.addEventListener('gamepadconnected', function (e) {
     for (var k = 0; k < ms.length; k++) {
       var w = WEAPONS[ms[k].weapon];
       mounts.push({
-        x: ms[k].x,
-        y: ms[k].y,
+        x: ms[k].x * kx,
+        y: ms[k].y * ky,
         weapon: ms[k].weapon,
         ammo: w.ammo,
         taken: false,
@@ -1732,8 +1792,8 @@ window.addEventListener('gamepadconnected', function (e) {
     var cs = TERRAIN_SETS[idx].chests || [];
     for (var ci = 0; ci < cs.length; ci++) {
       chests.push({
-        x: cs[ci].x,
-        y: cs[ci].y,
+        x: cs[ci].x * kx,
+        y: cs[ci].y * ky,
         opened: false,
         openT: 0,
         /* 开启后进入倒计时，归零即原地重新刷新，实现无限刷新 */
@@ -1977,7 +2037,9 @@ window.addEventListener('gamepadconnected', function (e) {
   function makePlayer(id, solo) {
     var p = {
       id: id,
-      x: solo ? WW * 0.5 : (id === 1 ? 480 : 1248),
+      /* 双人出生点原本是相对 BASE_WW 的硬编码 480/1248，世界随视口变化后改按比例，
+         否则宽屏下两人会挤在左侧一小块区域 */
+      x: solo ? WW * 0.5 : (id === 1 ? WW * (480 / BASE_WW) : WW * (1248 / BASE_WW)),
       y: WH * 0.62,
       r: CFG.playerR,
       hp: CFG.playerHp,
@@ -6593,6 +6655,16 @@ window.addEventListener('gamepadconnected', function (e) {
     if (resizeTimer) { clearTimeout(resizeTimer); }
     resizeTimer = setTimeout(function () { resizeTimer = null; setupCanvas(); }, 120);
   });
+
+  /* 进出全屏时窗口尺寸没变、变的是 #stage，window.resize 不一定触发，
+     而视口/世界尺寸依赖 #stage，故单独监听全屏变化并重算。 */
+  var fsEvents = ['fullscreenchange', 'webkitfullscreenchange'];
+  for (var fe = 0; fe < fsEvents.length; fe++) {
+    document.addEventListener(fsEvents[fe], function () {
+      if (resizeTimer) { clearTimeout(resizeTimer); }
+      resizeTimer = setTimeout(function () { resizeTimer = null; setupCanvas(); }, 60);
+    });
+  }
 
   document.getElementById('btnResume').addEventListener('click', function () {
     togglePause();
