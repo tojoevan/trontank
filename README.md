@@ -68,9 +68,17 @@
 - **通用**：`P` / `Esc` 暂停；`R` 重开；`F` 全屏；`1-3` 选卡。
 
 ### 手柄（需 Chrome/Edge + HTTPS/localhost）
-- 左摇杆 / 十字键：移动；`A` 或 `ZR`：射击（按住）；`X`：切枪；`Y`：投弹。
-- 菜单：`A`=单人，`Y`=双人，`+`=操作说明，`-`=按键设置。
-- 战斗中：`+`=暂停；整备选卡：左右移动 + `A`/射击确认。
+> Switch 手柄的键帽字母与 Xbox 的物理位置差 90°，两者不可兼得，因此做成**可切换布局**（默认 `xbox`）。
+
+| 说明 | Xbox 布局（默认，按**位置**） | Switch 原生（按**键帽字母**） |
+|---|---|---|
+| 射击 | **下**（= Pro 键帽 B） | **A** |
+| 切枪 | **左**（= Pro 键帽 Y） | **X** |
+| 投弹 | **上**（= Pro 键帽 X） | **Y** |
+
+- 任何布局下 **Pro 键帽 A 与 ZR 都能射击**（兜底，避免切换后没键开火）。
+- 菜单：当前布局的射击键=单人，投弹键=双人，`+`=操作说明，`-`=按键设置；战斗中 `+`=暂停。
+- 切换入口：「按键设置 → 手柄面键布局」，持久化于 `bqs.padLayout.v1`。
 
 ---
 
@@ -142,7 +150,9 @@
 
 ### 6.8 手柄配置
 - **WebHID 过滤设备**（`requestGamepad` 的 `filters`）：Switch `vendorId 0x057e` 的 `productId 0x2009`(Pro Controller) / `0x2006`(Joy-Con L) / `0x2007`(Joy-Con R)。要支持其他蓝牙手柄，在此加 filter 并在 `hidBuildPseudo` 里加对应报告解析。
-- **标准手柄按钮索引**（`gpRead`）：A=0, B=1, X=2, Y=3, ZR=7, Minus=8, Plus=9, 十字键 12–15。
+- **面键索引**（`gpRead` 读取）：0=A、1=B、2=X、3=Y、7=ZR、8=Minus、9=Plus、12–15=十字键。
+- **面键布局** `padLayout`：取值 `'xbox'`（默认，按物理位置）/`'switch'`（按键帽字母），索引表在 `PAD_LAYOUTS`。
+  ⚠️ **两通路语义不同**：Gamepad API 的 `standard` mapping 是按 *Xbox 位置* 编号的，而 WebHID 的 `0x30` 报告我们按 *Pro 字母* 编号 —— **同一个索引在两条通路下可能对应不同的物理键**。这是「换个浏览器/换个通路手感就变了」的根因，改动前务必先看清走的哪条路。
 - **手柄归属** `gamepadTarget`：取值 `'p1'` / `'p2'` / `'both'`（默认 `'both'`）；单人模式恒为 P1。配置存于 `bqs.gpTarget.v1`。
 - **诊断开关**：URL 加 `?debug=hid`（如 `https://域名/?debug=hid`）可在左下角实时显示原始报文前 12 字节 + 解析后的双摇杆值，手柄异常时优先用它取证。
 
@@ -166,7 +176,12 @@
 - **WebHID 仅 Chrome / Edge 支持**，Safari 无效（按钮会提示「此浏览器不支持」）。
 - **务必 HTTPS/localhost**：否则手柄完全不可用（`file://` 与纯 http 都会被禁）。
 - Switch 的 **Home 键是系统保留键**，网页层无法拦截（属正常，不影响游戏）。
-- **Safari 无法使用 Pro Controller 手柄**：Safari 不支持 WebHID，而 macOS 又不把该手柄暴露给 Gamepad API，页面侧无回退余地 → 只能用 Chrome / Edge。
+- **Safari 用手柄受限（但与 HTTPS 无关）**：Safari 不支持 WebHID，只能走 Gamepad API；而后者能否枚举到 Pro Controller 取决于两件事 ——
+  1. **macOS 版本**：需 Ventura(13)+ 才原生支持该手柄（旧版 Darwin 的 HID 手柄服务覆盖不到它）；
+  2. **必须按手柄键激活**：所有浏览器都要求这个用户手势才会暴露设备。
+  ⚠️ 最常见的失效原因是 **WebHID 独占 HID 设备**：只要刚用 Chrome 点过「连接手柄」，macOS 就不再把手柄交给 Safari，`getGamepads()` 必然返回空。解决：**完全退出 Chrome** 后再用 Safari。
+- **诊断开关**：`?debug=hid` = 原始报文 + 双摇杆解析；`?debug=pad` = 枚举实况（UA / secureContext / `navigator.hid` / `getGamepads()` 长度与每个槽位的 id·mapping·axes·buttons / `gamepadconnected` 触发次数）。手柄异常时**先用它取证再改**。
+- `gamepadconnected` 监听在 `<script>` **第一行**就注册（远早于游戏脚本尾部），避免线上加载慢时用户手势早于监听器注册、事件被丢弃。
 - 手柄键位用的是标准索引假设；若实测某键不对，改 `gpRead` / `hidBuildPseudo` 里对应的位/索引即可（一行级改动）。先用 `?debug=hid` 取证再改。
 
 ---

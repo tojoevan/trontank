@@ -855,9 +855,10 @@
         <div class="help-row"><span class="kbd">鼠标</span><span>点击按钮 / 选卡</span></div>
         <div class="help-row help-sep" style="margin-top:6px"><span class="kbd">手柄</span><span>接入后自动启用（见下）</span></div>
         <div class="help-row"><span class="kbd">左摇杆 / 十字键</span><span>手柄移动</span></div>
-        <div class="help-row"><span class="kbd">A / ZR</span><span>手柄射击（按住）</span></div>
-        <div class="help-row"><span class="kbd">X / Y</span><span>切换武器 / 投掷炸弹</span></div>
+        <div class="help-row"><span class="kbd">下 / A / ZR</span><span>手柄射击（按住，三者等效）</span></div>
+        <div class="help-row"><span class="kbd">左 / 上</span><span>切换武器 / 投掷炸弹</span></div>
         <div class="help-row"><span class="kbd">+ / -</span><span>暂停 · 菜单操作</span></div>
+        <div class="help-row"><span class="kbd">面键布局</span><span>默认按 Xbox 位置；需按字母可在按键设置里切换</span></div>
       </div>
       <ul class="help-list">
         <li>单人用 1P 键位，方向键也可移动；双人 1P 左侧、2P 右侧，同一键盘分控。</li>
@@ -870,7 +871,8 @@
         <li>双人 1.5 秒内击中同一目标触发“热修复连携”，加分回血；靠近时减伤 25%。</li>
         <li>敌人清空且掉落物全部捡完后进入 8 秒整备：← → 移动选中，J / 右 Shift 确认，1 / 2 / 3 直选。</li>
         <li>场地每 2 波重构一次；键位可在“按键设置”中修改；切到别的窗口会自动暂停。</li>
-        <li>手柄 0 控制 1P，双人再接一只控制 2P。Nintendo（Pro Controller / Joy-Con）等浏览器“手柄”列表认不到的，点开始页「连接手柄」用 WebHID 直连（需 Chrome / Edge）。菜单里 A=单人、Y=双人、+=操作说明、-=按键设置。</li>
+        <li>手柄 0 控制 1P，双人再接一只控制 2P。Nintendo（Pro Controller / Joy-Con）等浏览器“手柄”列表认不到的，点开始页「连接手柄」用 WebHID 直连（需 Chrome / Edge）。</li>
+        <li>手柄面键默认按 <b>Xbox 的物理位置</b>映射（下=射击 / 左=切枪 / 上=投弹），因为 Switch 手柄的字母排布比 Xbox 旋转了 90 度，按字母用会别扭。要严格按键帽字母（A=射击 / X=切枪 / Y=投弹），到「按键设置 → 手柄面键布局」切到 Switch 原生。菜单里：下/A=单人、上=双人、+=操作说明、-=按键设置。</li>
       </ul>
       </div>
       <button class="btn primary" type="button" id="btnHelpClose">知道了</button>
@@ -910,6 +912,12 @@
         <button class="gp-target" type="button" data-target="p2">P2 用手柄</button>
         <button class="gp-target" type="button" data-target="both">双柄各一</button>
       </div>
+      <div class="keys-head gp">手柄面键布局</div>
+      <div class="gp-target-row">
+        <button class="gp-target pad-layout" type="button" data-layout="xbox">Xbox 布局（推荐）</button>
+        <button class="gp-target pad-layout" type="button" data-layout="switch">Switch 原生</button>
+      </div>
+      <p class="keys-note">Xbox 布局按<b>物理位置</b>走，符合大多数人的肌肉记忆：<b>下</b>=射击 / <b>左</b>=切枪 / <b>上</b>=投弹（此时对应 Pro 手柄上的 B、Y、X 三个键帽）。Switch 原生则严格按<b>键帽字母</b>：A=射击 / X=切枪 / Y=投弹。无论哪种，Pro 的键帽 A 和右扳机 ZR 都能射击。</p>
       <p class="keys-note" id="keysNote">同一按键不能重复使用；P / Esc、R、F、1-3 为系统键，不可绑定。手柄分配：P1=1P 用柄（2P 键盘）；P2=2P 用柄（1P 键盘）；双柄=两只手柄各控一人。单人模式手柄固定控制 P1。</p>
       <div class="btn-row">
         <button class="btn" type="button" id="btnKeysReset">恢复默认</button>
@@ -4217,6 +4225,25 @@ window.addEventListener('gamepadconnected', function (e) {
      手柄 0 → 1P；双人且接了第二只手柄 → 手柄 1 控制 2P。
      浏览器需先按一下手柄任意键才会被识别（连接后会有提示）。
      ========================================================== */
+  /* ---------- 面键布局 ----------
+     Pro Controller 的键帽字母和 Xbox 的位置习惯是错位的：
+         Pro Controller        Xbox 布局
+              X                     Y
+           Y     A               X     B
+              B                     A
+     同一个物理位置，两家的字母不同；同一个字母，物理位置也不同。因此「按字母用」与
+     「按 Xbox 肌肉记忆用」无法同时满足，做成可切换的两套索引表（值为按钮索引）：
+       switch = 按 Pro 键帽字母：A(0) 射击 / X(2) 切枪 / Y(3) 投弹
+       xbox   = 按 Xbox 位置：下键 B(1) 射击 / 左键 Y(3) 切枪 / 上键 X(2) 投弹  ← 默认
+     ⚠ Gamepad API 的 standard mapping 是按「Xbox 位置」编号的，而 WebHID 的 0x30
+       报告我们按「Pro 字母」编号，两条通路下同一个索引可能对应不同的物理键。 */
+  var PAD_LAYOUTS = {
+    switch: { fire: 0, swap: 2, bomb: 3, confirm: 0 },
+    xbox: { fire: 1, swap: 3, bomb: 2, confirm: 1 }
+  };
+  var padLayout = store.get('bqs.padLayout.v1', 'xbox');
+  if (!PAD_LAYOUTS[padLayout]) { padLayout = 'xbox'; }
+
   var padHeld = {
     p1: { left: false, right: false, up: false, down: false, fire: false },
     p2: { left: false, right: false, up: false, down: false, fire: false }
@@ -4242,12 +4269,14 @@ window.addEventListener('gamepadconnected', function (e) {
     if (gpBtn(gp, 15)) { ax += 1; }   // 右
     if (gpBtn(gp, 12)) { ay -= 1; }   // 上
     if (gpBtn(gp, 13)) { ay += 1; }   // 下
+    var L = PAD_LAYOUTS[padLayout] || PAD_LAYOUTS.xbox;
     return {
       left: ax < -0.30, right: ax > 0.30, up: ay < -0.30, down: ay > 0.30,
-      fire: gpBtn(gp, 0) || gpBtn(gp, 7),
-      swap: gpBtn(gp, 2), bomb: gpBtn(gp, 3),
+      /* Pro 键帽 A(0) 与右扳机 ZR(7) 在两种布局下都能开火，避免切布局后没有键能射击 */
+      fire: gpBtn(gp, L.fire) || gpBtn(gp, 0) || gpBtn(gp, 7),
+      swap: gpBtn(gp, L.swap), bomb: gpBtn(gp, L.bomb),
       start: gpBtn(gp, 9), back: gpBtn(gp, 8),
-      confirm: gpBtn(gp, 0),
+      confirm: gpBtn(gp, L.confirm) || gpBtn(gp, 0),
       dleft: gpBtn(gp, 14) || lx < -0.6, dright: gpBtn(gp, 15) || lx > 0.6
     };
   }
@@ -4469,7 +4498,7 @@ window.addEventListener('gamepadconnected', function (e) {
         device._state = hidBuildPseudo(ev.data);
       });
       hidPads.push(device);
-      showToast('手柄已连接 · 左摇杆移动，A 射击');
+      showToast('手柄已连接 · 左摇杆移动，下键 / A / ZR 射击');
       updateGamepadStatus();
     }).catch(function () { showToast('手柄打开失败，请重试'); });
   }
@@ -4534,6 +4563,26 @@ window.addEventListener('gamepadconnected', function (e) {
     });
   }
   syncGpTargetUI();
+
+  /* 面键布局切换（Xbox 位置 / Switch 字母），对 Gamepad API 与 WebHID 两条通路同时生效 */
+  var padLayoutBtns = document.querySelectorAll('.pad-layout');
+  function syncPadLayoutUI() {
+    for (var i = 0; i < padLayoutBtns.length; i++) {
+      padLayoutBtns[i].classList.toggle('active', padLayoutBtns[i].getAttribute('data-layout') === padLayout);
+    }
+  }
+  for (var i = 0; i < padLayoutBtns.length; i++) {
+    padLayoutBtns[i].addEventListener('click', function () {
+      padLayout = this.getAttribute('data-layout');
+      if (!PAD_LAYOUTS[padLayout]) { padLayout = 'xbox'; }
+      store.set('bqs.padLayout.v1', padLayout);
+      syncPadLayoutUI();
+      showToast(padLayout === 'xbox'
+        ? '已切 Xbox 布局：下=射击 / 左=切枪 / 上=投弹'
+        : '已切 Switch 原生：A=射击 / X=切枪 / Y=投弹');
+    });
+  }
+  syncPadLayoutUI();
 
   if (typeof window.addEventListener === 'function') {
     window.addEventListener('gamepadconnected', function (e) {
