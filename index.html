@@ -1166,7 +1166,11 @@
     /* 拾取手感（变量集中控制，便于后期微调） */
     pickupRadius: 22,       // 触发的判定半径：与玩家半径相加。原 9（≈24px 才能捡），现 22（≈37px，路过即可）
     pickupAttractR: 72,     // 磁吸半径：玩家进入此范围，掉落物主动飞向角色（px）
-    pickupAttractSpeed: 280 // 磁吸最大速度（px/s），越靠近吸得越快
+    pickupAttractSpeed: 280,// 磁吸最大速度（px/s），越靠近吸得越快
+    /* 瞄准辅助（小角度自动修正）：玩家射线与敌人偏差≤阈值时，子弹转向敌人（最多修正阈值） */
+    aimAssistEnabled: true, // 总开关，一键回退
+    aimAssistAngle: 10,     // 默认最大修正角（度）；不同武器可在 WEAPONS 里用 aimAssist 单独覆盖
+    aimAssistRange: 360     // 只辅助此距离内的敌人（px）；0 = 不限距离
   };
 
   /* ----------------------------------------------------------
@@ -1204,7 +1208,8 @@
       id: 'scatter', name: '散射霰弹', tag: '墙面武器', color: '#ffc247',
       desc: '一次 5 发扇形弹丸，单发伤害低，贴脸最强',
       interval: 0.60, damage: 6, bulletSpeed: 560, bulletR: 4.2,
-      count: 5, spread: 0.46, pierce: 0, life: 0.78, ammo: 20
+      count: 5, spread: 0.46, pierce: 0, life: 0.78, ammo: 20,
+      aimAssist: 0  // 自身 26° 扇形已覆盖错位，无需额外修正
     },
     smg: {
       id: 'smg', name: '冲锋枪', tag: '高射速', color: '#ff8f5e',
@@ -1216,7 +1221,8 @@
       id: 'beam', name: '穿透光束', tag: '墙面武器', color: '#a98bff',
       desc: '高伤慢速，一发可穿透 3 个目标',
       interval: 0.50, damage: 17, bulletSpeed: 900, bulletR: 5,
-      count: 1, spread: 0, pierce: 3, life: 1.5, ammo: 14
+      count: 1, spread: 0, pierce: 3, life: 1.5, ammo: 14,
+      aimAssist: 16  // 单发高伤、容错低，给更大修正（默认 10）
     }
   };
 
@@ -1957,6 +1963,8 @@
       inv: 1.6,
       flash: 0,
       muzzle: 0,
+      aimFlash: 0,           // 瞄准辅助提示线剩余时间
+      aimAng: 0,            // 上次修正后的射击角（用于画提示线）
       moving: false,
       shield: 0,
       alive: true,
@@ -2261,6 +2269,7 @@
     if (p.inv > 0) { p.inv -= dt; }
     if (p.flash > 0) { p.flash -= dt; }
     if (p.muzzle > 0) { p.muzzle -= dt; }
+    if (p.aimFlash > 0) { p.aimFlash -= dt; }
 
     /* 超频芯片倒计时，结束后恢复原射速 */
     if (p.overclock > 0) {
@@ -2331,11 +2340,55 @@
     }
   }
 
+  /* 小角度自动修正：在 maxDeg 内，把 base 朝“范围内、角偏差最小”的敌人方向旋转（最多修正 maxDeg） */
+  function angleDiff(a, b) {
+    var d = a - b;
+    while (d > Math.PI) { d -= 2 * Math.PI; }
+    while (d < -Math.PI) { d += 2 * Math.PI; }
+    return d;
+  }
+  function aimAssistAngle(base, px, py, maxDeg) {
+    var maxRad = maxDeg * Math.PI / 180;
+    var bestErr = maxRad + 1e-6;
+    var bestAng = null;
+    var range = CFG.aimAssistRange;
+    for (var i = 0; i < enemies.length; i++) {
+      var e = enemies[i];
+      if (e.spawn > 0) { continue; }              // 刚生成、尚未可击中的不辅助
+      var dx = e.x - px, dy = e.y - py;
+      var dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < 1) { continue; }
+      if (range > 0 && dist > range) { continue; }
+      var ang = Math.atan2(dy, dx);
+      var err = Math.abs(angleDiff(ang, base));
+      if (err < bestErr) { bestErr = err; bestAng = ang; }
+    }
+    if (bestAng !== null) {
+      var corr = angleDiff(bestAng, base);        // 带符号偏差
+      var mag = Math.min(Math.abs(corr), maxRad) * (corr < 0 ? -1 : 1);
+      return base + mag;
+    }
+    return base;
+  }
+
   function fire(p) {
     var len = Math.hypot(p.dirX, p.dirY) || 1;
     var dx = p.dirX / len;
     var dy = p.dirY / len;
     var base = Math.atan2(dy, dx);
+    /* 小角度自动修正：仅当敌人与当前 8 向射线偏差≤阈值时转向，超出不修正（保留瞄准手感） */
+    if (CFG.aimAssistEnabled) {
+      var wdef = WEAPONS[p.weapon] || WEAPONS.pistol;
+      var wAim = (typeof wdef.aimAssist === 'number') ? wdef.aimAssist : CFG.aimAssistAngle;
+      if (wAim > 0) {
+        var corrected = aimAssistAngle(base, p.x, p.y, wAim);
+        if (Math.abs(angleDiff(corrected, base)) > 0.01) {
+          p.aimAng = corrected;
+          p.aimFlash = 0.14;
+        }
+        base = corrected;
+      }
+    }
     var n = p.shots || 1;
     var spread = p.spread || 0;
     var i;
@@ -5364,6 +5417,22 @@
     ctx.fillRect(-p.r * 0.44, p.r * 0.69, p.r * 0.28, p.r * 0.13);
 
     ctx.restore();
+
+    /* 瞄准辅助提示：小角度自动修正生效时，画一道极淡虚线，说明子弹为何偏一点 */
+    if (p.aimFlash > 0) {
+      ctx.save();
+      ctx.globalAlpha = baseAlpha * clamp(p.aimFlash * 6, 0, 0.5);
+      ctx.strokeStyle = p.color;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 4]);
+      var al0 = p.r + 6, al1 = p.r + 6 + 46;
+      ctx.beginPath();
+      ctx.moveTo(px + Math.cos(p.aimAng) * al0, py + Math.sin(p.aimAng) * al0);
+      ctx.lineTo(px + Math.cos(p.aimAng) * al1, py + Math.sin(p.aimAng) * al1);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+    }
 
     /* 枪口闪光 */
     if (p.muzzle > 0) {
