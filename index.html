@@ -405,20 +405,29 @@
   .help-list li::marker{color:rgba(55,230,255,.6);}
   .help-panel .btn{margin-top:.2em;}
 
-  /* 按键设置面板 */
-  .keys-panel{width:min(100%,40em);}
+  /* 按键设置面板：加宽 + 内部再分双列，尽量不触发垂直滚动条 */
+  .keys-panel{
+    width:min(100%,58em);
+    padding:1.6em 1.8em;
+  }
   .keys-grid{
     display:grid;
     grid-template-columns:1fr 1fr;
-    gap:1em;
-    margin:1em 0 .6em;
+    gap:.85em;
+    margin:.7em 0 .5em;
     text-align:left;
+  }
+  /* 每位玩家的 7 个动作在块内分两列：4 + 3，纵向高度减半 */
+  .keys-rows{
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:.12em .7em;
   }
   .keys-col{
     display:flex;
     flex-direction:column;
-    gap:.28em;
-    padding:.75em .85em .85em;
+    gap:.3em;
+    padding:.6em .7em .7em;
     border:1px solid rgba(110,170,230,.14);
     border-radius:9px;
     background:rgba(255,255,255,.025);
@@ -468,18 +477,48 @@
   }
   .keys-note{
     min-height:1.5em;
-    margin:.35em 0 1.1em;
+    margin:0;
     font-size:.7em;
     line-height:1.5;
     color:rgba(139,166,198,.8);
   }
   .keys-note.error{color:#ff8b96;}
   .keys-note.ok{color:var(--mint);}
-  .keys-head.gp{margin-top:16px;}
-  .gp-target-row{display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 2px;}
+  /* 两条静态说明并排成一栏，状态提示单独居中一行（JS 会重置 className，故用 id 选择器） */
+  .keys-notes{
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:.85em;
+    margin:.55em 0 .2em;
+  }
+  #keysNote{
+    min-height:1.4em;
+    margin:.55em 0 .2em;
+    text-align:center;
+  }
+  .keys-head.gp{margin-top:0;}
+  /* 两个手柄配置块并排，省掉一整块纵向空间 */
+  .gp-blocks{
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:.85em;
+    margin-top:.2em;
+    text-align:left;
+  }
+  .gp-block{
+    padding:.55em .7em .65em;
+    border:1px solid rgba(110,170,230,.14);
+    border-radius:9px;
+    background:rgba(255,255,255,.025);
+  }
+  .gp-target-row{display:flex;gap:6px;flex-wrap:wrap;margin:5px 0 1px;}
   .gp-target{border:1px solid rgba(90,170,255,.35);background:rgba(20,30,46,.6);color:#cfe4ff;padding:7px 12px;border-radius:8px;cursor:pointer;font:600 13px/1 system-ui,"Microsoft YaHei",sans-serif;transition:.15s;}
   .gp-target:hover{border-color:rgba(120,200,255,.6);}
   .gp-target.active{background:rgba(80,160,255,.25);border-color:#7cc2ff;color:#fff;box-shadow:0 0 12px rgba(120,200,255,.25);}
+  /* 窄窗 / 手机退回单列堆叠，避免按钮挤在一起 */
+  @media (max-width:760px){
+    .keys-grid,.keys-rows,.gp-blocks,.keys-notes{grid-template-columns:1fr;}
+  }
 
   .small-panel{width:min(100%,26em);}
   .pause-icon{
@@ -899,38 +938,51 @@
       <div class="keys-grid">
         <div class="keys-col">
           <div class="keys-head p1">1P · 青色</div>
-          <div class="key-row"><span>上</span><button class="keybtn" type="button" data-player="p1" data-act="up">W</button></div>
-          <div class="key-row"><span>下</span><button class="keybtn" type="button" data-player="p1" data-act="down">S</button></div>
-          <div class="key-row"><span>左</span><button class="keybtn" type="button" data-player="p1" data-act="left">A</button></div>
-          <div class="key-row"><span>右</span><button class="keybtn" type="button" data-player="p1" data-act="right">D</button></div>
-          <div class="key-row"><span>射击</span><button class="keybtn" type="button" data-player="p1" data-act="fire">J</button></div>
-          <div class="key-row"><span>切换武器</span><button class="keybtn" type="button" data-player="p1" data-act="swap">Q</button></div>
-          <div class="key-row"><span>投掷炸弹</span><button class="keybtn" type="button" data-player="p1" data-act="bomb">E</button></div>
+          <div class="keys-rows">
+            <div class="key-row"><span>上</span><button class="keybtn" type="button" data-player="p1" data-act="up">W</button></div>
+            <div class="key-row"><span>下</span><button class="keybtn" type="button" data-player="p1" data-act="down">S</button></div>
+            <div class="key-row"><span>左</span><button class="keybtn" type="button" data-player="p1" data-act="left">A</button></div>
+            <div class="key-row"><span>右</span><button class="keybtn" type="button" data-player="p1" data-act="right">D</button></div>
+            <div class="key-row"><span>射击</span><button class="keybtn" type="button" data-player="p1" data-act="fire">J</button></div>
+            <div class="key-row"><span>切换武器</span><button class="keybtn" type="button" data-player="p1" data-act="swap">Q</button></div>
+            <div class="key-row"><span>投掷炸弹</span><button class="keybtn" type="button" data-player="p1" data-act="bomb">E</button></div>
+          </div>
         </div>
         <div class="keys-col">
           <div class="keys-head p2">2P · 橙色</div>
-          <div class="key-row"><span>上</span><button class="keybtn" type="button" data-player="p2" data-act="up">↑</button></div>
-          <div class="key-row"><span>下</span><button class="keybtn" type="button" data-player="p2" data-act="down">↓</button></div>
-          <div class="key-row"><span>左</span><button class="keybtn" type="button" data-player="p2" data-act="left">←</button></div>
-          <div class="key-row"><span>右</span><button class="keybtn" type="button" data-player="p2" data-act="right">→</button></div>
-          <div class="key-row"><span>射击</span><button class="keybtn" type="button" data-player="p2" data-act="fire">右 Shift</button></div>
-          <div class="key-row"><span>切换武器</span><button class="keybtn" type="button" data-player="p2" data-act="swap">/</button></div>
-          <div class="key-row"><span>投掷炸弹</span><button class="keybtn" type="button" data-player="p2" data-act="bomb">.</button></div>
+          <div class="keys-rows">
+            <div class="key-row"><span>上</span><button class="keybtn" type="button" data-player="p2" data-act="up">↑</button></div>
+            <div class="key-row"><span>下</span><button class="keybtn" type="button" data-player="p2" data-act="down">↓</button></div>
+            <div class="key-row"><span>左</span><button class="keybtn" type="button" data-player="p2" data-act="left">←</button></div>
+            <div class="key-row"><span>右</span><button class="keybtn" type="button" data-player="p2" data-act="right">→</button></div>
+            <div class="key-row"><span>射击</span><button class="keybtn" type="button" data-player="p2" data-act="fire">右 Shift</button></div>
+            <div class="key-row"><span>切换武器</span><button class="keybtn" type="button" data-player="p2" data-act="swap">/</button></div>
+            <div class="key-row"><span>投掷炸弹</span><button class="keybtn" type="button" data-player="p2" data-act="bomb">.</button></div>
+          </div>
         </div>
       </div>
-      <div class="keys-head gp">手柄分配（双人）</div>
-      <div class="gp-target-row">
-        <button class="gp-target" type="button" data-target="p1">P1 用手柄</button>
-        <button class="gp-target" type="button" data-target="p2">P2 用手柄</button>
-        <button class="gp-target" type="button" data-target="both">双柄各一</button>
+      <div class="gp-blocks">
+        <div class="gp-block">
+          <div class="keys-head gp">手柄分配（双人）</div>
+          <div class="gp-target-row">
+            <button class="gp-target" type="button" data-target="p1">P1 用手柄</button>
+            <button class="gp-target" type="button" data-target="p2">P2 用手柄</button>
+            <button class="gp-target" type="button" data-target="both">双柄各一</button>
+          </div>
+        </div>
+        <div class="gp-block">
+          <div class="keys-head gp">手柄面键布局</div>
+          <div class="gp-target-row">
+            <button class="gp-target pad-layout" type="button" data-layout="xbox">Xbox 布局（推荐）</button>
+            <button class="gp-target pad-layout" type="button" data-layout="switch">Switch 原生</button>
+          </div>
+        </div>
       </div>
-      <div class="keys-head gp">手柄面键布局</div>
-      <div class="gp-target-row">
-        <button class="gp-target pad-layout" type="button" data-layout="xbox">Xbox 布局（推荐）</button>
-        <button class="gp-target pad-layout" type="button" data-layout="switch">Switch 原生</button>
+      <div class="keys-notes">
+        <p class="keys-note">Xbox 布局按<b>物理位置</b>：<b>下</b>=射击 / <b>左</b>=切枪 / <b>上</b>=投弹（对应 Pro 键帽 B、Y、X）。Switch 原生按键帽<b>字母</b>：A=射击 / X=切枪 / Y=投弹。两种布局下 Pro 的 A 与 ZR 均可射击。</p>
+        <p class="keys-note">同一按键不可重复；P / Esc、R、F、1-3 为系统键不可绑定。手柄分配：P1=1P 用柄、P2=2P 用柄、双柄各控一人；单人模式手柄固定控制 P1。</p>
       </div>
-      <p class="keys-note">Xbox 布局按<b>物理位置</b>走，符合大多数人的肌肉记忆：<b>下</b>=射击 / <b>左</b>=切枪 / <b>上</b>=投弹（此时对应 Pro 手柄上的 B、Y、X 三个键帽）。Switch 原生则严格按<b>键帽字母</b>：A=射击 / X=切枪 / Y=投弹。无论哪种，Pro 的键帽 A 和右扳机 ZR 都能射击。</p>
-      <p class="keys-note" id="keysNote">同一按键不能重复使用；P / Esc、R、F、1-3 为系统键，不可绑定。手柄分配：P1=1P 用柄（2P 键盘）；P2=2P 用柄（1P 键盘）；双柄=两只手柄各控一人。单人模式手柄固定控制 P1。</p>
+      <p class="keys-note" id="keysNote">点击按键格后按下新键；Esc 取消</p>
       <div class="btn-row">
         <button class="btn" type="button" id="btnKeysReset">恢复默认</button>
         <button class="btn primary" type="button" id="btnKeysClose">完成</button>
