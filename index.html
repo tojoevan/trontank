@@ -985,6 +985,16 @@
 </div>
 
 <script>
+/* 手柄连接事件：尽可能早地注册。
+   Safari / Firefox 都要求「按下手柄任意键」这个用户手势才会暴露设备，
+   若监听注册得太晚（游戏脚本执行到尾部才注册），线上加载慢时手势可能已经发生、事件已被丢弃。
+   这里只做记录，提示仍由后面 3.5 节的正式处理负责。 */
+window.__GP_CONN = { count: 0, lastId: '' };
+window.addEventListener('gamepadconnected', function (e) {
+  window.__GP_CONN.count++;
+  window.__GP_CONN.lastId = (e.gamepad && e.gamepad.id) ? e.gamepad.id : '';
+});
+
 (function () {
   'use strict';
 
@@ -4294,6 +4304,50 @@
     gpToastEl._t = setTimeout(function () { gpToastEl.style.opacity = '0'; }, 2600);
   }
 
+  /* ?debug=pad：打印手柄枚举实况，用于定位「某个环境能用 / 某个环境不能用」的差异 */
+  var PAD_DEBUG = (location.search || '').indexOf('debug=pad') >= 0;
+  var padDbgEl = null;
+  var padDbgLast = 0;
+  function padDebugDump(devs) {
+    /* 每 250ms 刷新即可，避免调试时每帧生成字符串影响主循环 */
+    var now = (typeof Date.now === 'function') ? Date.now() : 0;
+    if (now - padDbgLast < 250) { return; }
+    padDbgLast = now;
+    if (!padDbgEl) {
+      padDbgEl = document.createElement('pre');
+      padDbgEl.style.cssText = 'position:fixed;right:12px;bottom:12px;z-index:120;margin:0;padding:10px 12px;max-width:74vw;border-radius:10px;background:rgba(8,14,24,.93);color:#9fd9ff;font:11px/1.55 ui-monospace,Menlo,Consolas,monospace;border:1px solid rgba(120,180,255,.35);pointer-events:none;white-space:pre-wrap;';
+      document.body.appendChild(padDbgEl);
+    }
+    var L = [];
+    L.push('== 手柄诊断 debug=pad ==');
+    L.push('UA: ' + navigator.userAgent);
+    L.push('地址: ' + location.protocol + '//' + location.host + '   secureContext=' + window.isSecureContext);
+    L.push('WebHID(navigator.hid): ' + (navigator.hid ? '支持' : '不支持 ← Safari 即如此，只能走 Gamepad API'));
+    L.push('getGamepads 存在: ' + (navigator.getGamepads ? '是' : '否'));
+    var conn = window.__GP_CONN || { count: 0, lastId: '' };
+    L.push('gamepadconnected 触发次数: ' + conn.count + (conn.lastId ? '   最近 id=' + conn.lastId : ''));
+    var raw = navigator.getGamepads ? (navigator.getGamepads() || []) : [];
+    L.push('getGamepads() 返回长度: ' + raw.length);
+    var seen = 0;
+    for (var q = 0; q < raw.length; q++) {
+      var g = raw[q];
+      if (!g) { L.push('  [' + q + '] null'); continue; }
+      seen++;
+      L.push('  [' + q + '] id="' + g.id + '"  mapping="' + g.mapping + '"  connected=' + g.connected +
+        '  axes=' + (g.axes ? g.axes.length : '?') + '  buttons=' + (g.buttons ? g.buttons.length : '?'));
+    }
+    L.push('可用手柄槽位: ' + seen + '   实际驱动输入: ' + devs.length);
+    if (devs.length === 0) {
+      L.push('');
+      L.push('未检测到手柄，请依次排查：');
+      L.push('1) 鼠标先点一下页面取得焦点，再按手柄任意键唤醒（所有浏览器都要求这个手势）。');
+      L.push('2) macOS 需 Ventura(13)+ 才原生支持 Switch Pro Controller，旧系统 Safari 永远拿不到。');
+      L.push('3) 若刚用 Chrome 的「连接手柄」成功过，请完全退出 Chrome 再试：WebHID 会独占 HID 设备，');
+      L.push('   独占期间 macOS 不再把手柄交给 Safari，Gamepad API 必然返回空。');
+    }
+    padDbgEl.textContent = L.join('\n');
+  }
+
   function pollGamepads() {
     /* 收集所有可用手柄：WebHID 优先，其次标准 Gamepad API */
     var devs = [];
@@ -4306,6 +4360,7 @@
         if (list[m] && list[m].connected !== false) { devs.push(list[m]); }
       }
     }
+    if (PAD_DEBUG) { padDebugDump(devs); }
     if (devs.length === 0) { gpReset('p1'); gpReset('p2'); return; }
 
     /* 单人模式：手柄只控制唯一的 P1 */
