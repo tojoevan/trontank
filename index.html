@@ -4630,7 +4630,11 @@ window.addEventListener('gamepadconnected', function (e) {
     if (hidPads.length > 0) { el.textContent = '已连接 · WebHID'; el.style.color = '#8ef7c8'; return; }
     if (location.protocol === 'file:') { el.textContent = '请用 http://localhost 或 https 打开以启用手柄'; el.style.color = '#ffb0b8'; return; }
     if (navigator.hid) { el.textContent = '未连接（点左侧按钮）'; el.style.color = ''; }
-    else { el.textContent = '此浏览器不支持 WebHID，请用 Chrome'; el.style.color = '#ffb0b8'; }
+    else {
+      /* 无 WebHID（如 Safari）并非不能用：仍可走标准 Gamepad API，只需按一下手柄键唤醒。
+         旧文案写「请用 Chrome」会让人误以为 Safari 完全不能玩，故改为中性指引。 */
+      el.textContent = '无需连接 · 按一下手柄键即可'; el.style.color = '#9fd0ff';
+    }
   }
 
   function requestGamepad() {
@@ -4639,7 +4643,7 @@ window.addEventListener('gamepadconnected', function (e) {
       return;
     }
     if (!navigator.hid) {
-      showToast('当前浏览器不支持 WebHID，请用 Chrome / Edge');
+      showToast('本浏览器不支持直连（WebHID）。若系统已识别手柄，直接按一下手柄任意键即可使用');
       return;
     }
     navigator.hid.requestDevice({
