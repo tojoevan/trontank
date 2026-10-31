@@ -1191,7 +1191,12 @@ window.addEventListener('gamepadconnected', function (e) {
     aimAssistRange: 360,    // 只辅助此距离内的敌人（px）；0 = 不限距离
     /* 斜向释放缓冲：斜向→仅剩单轴时冻结一小段时间，避免松开双键的一瞬被判成正方向、
        导致 45° 瞄准被掰平。同时兼容键盘与手柄摇杆。0 = 关闭 */
-    moveReleaseGrace: 0.08  // 秒
+    moveReleaseGrace: 0.08, // 秒
+    /* WebHID 摇杆竖轴取反。Nintendo 0x30 报告的原始值是「向上推 = 数值变大」，
+       而游戏/Gamepad API 用屏幕坐标（向上 = 负值），故必须取反，否则上下颠倒。
+       ⚠ 只作用于 WebHID 通路；标准 Gamepad API 由系统/浏览器已标准化，不受此影响。
+       若某只手柄接上后上下仍相反，把这个值在 true / false 间切换即可。 */
+    hidInvertY: true
   };
 
   /* ----------------------------------------------------------
@@ -4471,10 +4476,12 @@ window.addEventListener('gamepadconnected', function (e) {
     function s12X(lo, mixed) { return lo | ((mixed & 0x0f) << 8); }        // 横向
     function s12Y(mixed, hi) { return ((mixed & 0xf0) >> 4) | (hi << 4); } // 竖向
     function norm(v) { return Math.max(-1, Math.min(1, (v - 2048) / 1280)); }
+    /* 竖轴取反：原始值「向上推 = 变大」，转成屏幕坐标（向上 = 负） */
+    var ySign = CFG.hidInvertY ? -1 : 1;
     var lx = norm(s12X(data.getUint8(5), data.getUint8(6)));
-    var ly = norm(s12Y(data.getUint8(6), data.getUint8(7)));
+    var ly = norm(s12Y(data.getUint8(6), data.getUint8(7))) * ySign;
     var rx = norm(s12X(data.getUint8(8), data.getUint8(9)));
-    var ry = norm(s12Y(data.getUint8(9), data.getUint8(10)));
+    var ry = norm(s12Y(data.getUint8(9), data.getUint8(10))) * ySign;
     if (HID_DEBUG) { hidDebugDump(data, { lx: lx, ly: ly, rx: rx, ry: ry }); }
     return { buttons: buttons, axes: [lx, ly, rx, ry] };
   }
