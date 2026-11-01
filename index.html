@@ -408,13 +408,13 @@
   /* 按键设置面板：加宽 + 内部再分双列，尽量不触发垂直滚动条 */
   .keys-panel{
     width:min(100%,58em);
-    padding:1.6em 1.8em;
+    padding:1.2em 1.7em;
   }
   .keys-grid{
     display:grid;
     grid-template-columns:1fr 1fr;
     gap:.85em;
-    margin:.7em 0 .5em;
+    margin:.5em 0 .3em;
     text-align:left;
   }
   /* 每位玩家的 7 个动作在块内分两列：4 + 3，纵向高度减半 */
@@ -447,7 +447,7 @@
     align-items:center;
     justify-content:space-between;
     gap:.6em;
-    padding:.2em 0;
+    padding:.13em 0;
   }
   .key-row > span{
     font-size:.76em;
@@ -489,11 +489,11 @@
     display:grid;
     grid-template-columns:1fr 1fr;
     gap:.85em;
-    margin:.55em 0 .2em;
+    margin:.4em 0 .1em;
   }
   #keysNote{
     min-height:1.4em;
-    margin:.55em 0 .2em;
+    margin:.4em 0 .1em;
     text-align:center;
   }
   .keys-head.gp{margin-top:0;}
@@ -515,6 +515,11 @@
   .gp-target{border:1px solid rgba(90,170,255,.35);background:rgba(20,30,46,.6);color:#cfe4ff;padding:7px 12px;border-radius:8px;cursor:pointer;font:600 13px/1 system-ui,"Microsoft YaHei",sans-serif;transition:.15s;}
   .gp-target:hover{border-color:rgba(120,200,255,.6);}
   .gp-target.active{background:rgba(80,160,255,.25);border-color:#7cc2ff;color:#fff;box-shadow:0 0 12px rgba(120,200,255,.25);}
+  /* 连接手柄区块跨整行，避免三块时右侧留空；状态文字与按钮同行 */
+  .gp-connect{grid-column:1 / -1;}
+  .gp-connect .gp-target-row{align-items:center;}
+  .gp-connect .menu-status{margin-left:auto;}
+  .gp-connect-hint{margin:.45em 0 0;font-size:.8em;opacity:.75;line-height:1.45;}
   /* 窄窗 / 手机退回单列堆叠，避免按钮挤在一起 */
   @media (max-width:760px){
     .keys-grid,.keys-rows,.gp-blocks,.keys-notes{grid-template-columns:1fr;}
@@ -866,12 +871,6 @@
             <span class="btn-label">按键设置</span>
           </button>
         </div>
-        <div class="menu-row">
-          <button class="btn ghost compact" type="button" id="btnGamepad">
-            <span class="btn-label" id="btnGamepadLabel">连接手柄</span>
-          </button>
-          <span class="menu-status" id="gamepadStatus" style="font-size:.78em;opacity:.8">未连接</span>
-        </div>
         <div class="diff-row" id="diffRow">
           <span class="diff-label">难度</span>
           <button class="diff" type="button" data-diff="easy">休闲</button>
@@ -909,21 +908,13 @@
         <div class="help-row"><span class="kbd">下 / A / ZR</span><span>手柄射击（按住，三者等效）</span></div>
         <div class="help-row"><span class="kbd">左 / 上</span><span>切换武器 / 投掷炸弹</span></div>
         <div class="help-row"><span class="kbd">+ / -</span><span>暂停 · 菜单操作</span></div>
-        <div class="help-row"><span class="kbd">面键布局</span><span>默认按 Xbox 位置；需按字母可在按键设置里切换</span></div>
       </div>
       <ul class="help-list">
-        <li>单人用 1P 键位，方向键也可移动；双人 1P 左侧、2P 右侧，同一键盘分控。</li>
-        <li>子弹朝角色最后移动的方向发射，移动方向就是射击方向。</li>
-        <li>手枪无限弹；武器架与宝箱提供有限弹药武器：冲锋枪 / 散射霰弹 / 穿透光束。</li>
-        <li>宝箱开启后掉出武器或补给（修复药剂 / 护盾发生器 / 超频芯片），走过去自动拾取；15 秒原地刷新。</li>
-        <li>拾取的武器会全部留存在背包里，切枪键循环切换；某把打空才会移除，炸弹会伤到敌人也会伤到自己。</li>
-        <li>战场比屏幕大，镜头跟随；左上角小地图显示你的位置与敌人分布。</li>
-        <li>双人：一人倒地，队友靠近 2 秒救起；两人同时倒地才结算。</li>
-        <li>双人 1.5 秒内击中同一目标触发“热修复连携”，加分回血；靠近时减伤 25%。</li>
-        <li>敌人清空且掉落物全部捡完后进入 8 秒整备：← → 移动选中，J / 右 Shift 确认，1 / 2 / 3 直选。</li>
-        <li>场地每 2 波重构一次；键位可在“按键设置”中修改；切到别的窗口会自动暂停。</li>
-        <li>手柄 0 控制 1P，双人再接一只控制 2P。Nintendo（Pro Controller / Joy-Con）等浏览器“手柄”列表认不到的，点开始页「连接手柄」用 WebHID 直连（需 Chrome / Edge）。</li>
-        <li>手柄面键默认按 <b>Xbox 的物理位置</b>映射（下=射击 / 左=切枪 / 上=投弹），因为 Switch 手柄的字母排布比 Xbox 旋转了 90 度，按字母用会别扭。要严格按键帽字母（A=射击 / X=切枪 / Y=投弹），到「按键设置 → 手柄面键布局」切到 Switch 原生。菜单里：下/A=单人、上=双人、+=操作说明、-=按键设置。</li>
+        <li>子弹朝最后移动方向发射，移动键即射击方向；手枪无限弹，武器架 / 宝箱给有限弹药武器与补给，走过自动拾取。</li>
+        <li>战场比屏幕大、镜头跟随，左上角小地图导航；清空敌人与掉落物后进入 8 秒整备选卡（← → 选、J / 右 Shift 确认）。</li>
+        <li>双人：一人倒地，队友靠近 2 秒救起；1.5 秒内同击一目标触发连携，加分回血、互相减伤。</li>
+        <li>手柄自动启用：0 号控 1P，双人再接一只控 2P；认不到的（如 Pro 手柄）到「按键设置 → 连接手柄」用 WebHID（Chrome / Edge）。</li>
+        <li>切到别的窗口自动暂停；键位、手柄分配与面键布局都可在「按键设置」中修改。</li>
       </ul>
       </div>
       <button class="btn primary" type="button" id="btnHelpClose">知道了</button>
@@ -969,6 +960,12 @@
             <button class="gp-target" type="button" data-target="p2">P2 用手柄</button>
             <button class="gp-target" type="button" data-target="both">双柄各一</button>
           </div>
+          <div class="gp-target-row gp-connect-row">
+            <button class="btn ghost compact" type="button" id="btnGamepad" style="padding:5px 12px;font-size:12px;">
+              <span class="btn-label" id="btnGamepadLabel">连接手柄</span>
+            </button>
+            <span class="menu-status" id="gamepadStatus" style="font-size:.8em;opacity:.85">未连接</span>
+          </div>
         </div>
         <div class="gp-block">
           <div class="keys-head gp">手柄面键布局</div>
@@ -976,6 +973,7 @@
             <button class="gp-target pad-layout" type="button" data-layout="xbox">Xbox 布局（推荐）</button>
             <button class="gp-target pad-layout" type="button" data-layout="switch">Switch 原生</button>
           </div>
+          <p class="keys-note gp-connect-hint" style="margin:.55em 0 0;">认不到的手柄（Pro 等）用 WebHID 直连，需 Chrome / Edge；系统已识别的按一下键即可。</p>
         </div>
       </div>
       <div class="keys-notes">
@@ -1733,6 +1731,15 @@ window.addEventListener('gamepadconnected', function (e) {
   var wave = 0;
   var score = 0;
   var kills = 0;
+
+  /* 按玩家 id（1/2）查找玩家；找不到返回 null（例如旧存档弹 owner 缺失） */
+  function findPlayer(id) {
+    if (!id) { return null; }
+    for (var i = 0; i < players.length; i++) {
+      if (players[i].id === id) { return players[i]; }
+    }
+    return null;
+  }
   var comboCount = 0;        // 连携击杀次数
   var duoShield = false;     // 背靠背护盾是否生效
   var comboFlash = 0;        // 连携触发的屏幕提示计时
@@ -1953,9 +1960,12 @@ window.addEventListener('gamepadconnected', function (e) {
     return blocked;
   }
 
-  function destroyObstacle(o) {
+  function destroyObstacle(o, killerId) {
     o.dead = true;
     score += 50;
+    /* 障碍分归属击破者（炸弹传入 owner.id，子弹直接是 owner） */
+    var ko = findPlayer(killerId);
+    if (ko) { ko.stats.score += 50; }
     addFloat(o.x, o.y - 22, '+50', '#ffc247');
     burst(o.x, o.y, '#ffc247', 26, 240, 4);
     addRing(o.x, o.y, 8, 62, '#ffc247', 0.42, 2.5);
@@ -2131,7 +2141,9 @@ window.addEventListener('gamepadconnected', function (e) {
       overclock: 0,
       overclockMax: 0,
       color: P_COLOR[id],
-      label: id === 1 ? '1P' : '2P'
+      label: id === 1 ? '1P' : '2P',
+      /* 个人战绩：击杀数与击杀/障碍得分（波次奖励平摊） */
+      stats: { score: 0, kills: 0 }
     };
     applyWeapon(p);
     return p;
@@ -2708,7 +2720,7 @@ window.addEventListener('gamepadconnected', function (e) {
       var dmg = BOMB.enemyMin + (BOMB.enemyMax - BOMB.enemyMin) * k;
       e.hp -= dmg;
       e.hit = 0.14;
-      if (e.hp <= 0) { killEnemy(j); }
+      if (e.hp <= 0) { killEnemy(j, b.owner ? b.owner.id : 0); }
     }
 
     /* 缓存箱：范围内的直接炸开 */
@@ -2718,7 +2730,7 @@ window.addEventListener('gamepadconnected', function (e) {
       if (Math.hypot(o.x - x, o.y - y) < R) {
         o.hp -= 80;
         o.hit = 0.1;
-        if (o.hp <= 0) { destroyObstacle(o); }
+        if (o.hp <= 0) { destroyObstacle(o, b.owner ? b.owner.id : 0); }
       }
     }
 
@@ -3166,7 +3178,7 @@ window.addEventListener('gamepadconnected', function (e) {
         obs.hit = 0.1;
         burst(b.x, b.y, '#ffc247', 5, 120, 2);
         Sfx.hit();
-        if (obs.hp <= 0) { destroyObstacle(obs); }
+        if (obs.hp <= 0) { destroyObstacle(obs, b.owner); }
       } else {
         burst(b.x, b.y, '#9ec9ee', 4, 90, 1.8);
         Sfx.hit();
@@ -3190,7 +3202,7 @@ window.addEventListener('gamepadconnected', function (e) {
         burst(b.x, b.y, b.crit ? '#ffd7dc' : e.color, b.crit ? 10 : 5, b.crit ? 180 : 120, b.crit ? 3 : 2);
         if (b.crit) { addFloat(e.x, e.y - e.r - 10, '暴击 ' + Math.round(dealt), '#ff8b96'); }
         Sfx.hit();
-        if (e.hp <= 0) { killEnemy(j); }
+        if (e.hp <= 0) { killEnemy(j, b.owner); }
 
         if (b.pierce > 0) {
           b.pierce -= 1;
@@ -3237,12 +3249,18 @@ window.addEventListener('gamepadconnected', function (e) {
     }
   }
 
-  function killEnemy(index) {
+  function killEnemy(index, killerId) {
     var e = enemies[index];
     if (!e) { return; }
     enemies.splice(index, 1);
     kills += 1;
     score += e.score;
+    /* 个人战绩归属：谁补上最后一刀算谁的；单人模式兜底给 1P */
+    var ko = findPlayer(killerId) || (mode === 'solo' ? players[0] : null);
+    if (ko) {
+      ko.stats.kills += 1;
+      ko.stats.score += e.score;
+    }
     addFloat(e.x, e.y - e.r - 12, '+' + e.score, e.color);
     burst(e.x, e.y, e.color, e.boss ? 64 : 15, e.boss ? 330 : 190, e.boss ? 5 : 3);
     addRing(e.x, e.y, e.r * 0.6, e.boss ? 150 : e.r * 2.6, e.color, e.boss ? 0.6 : 0.35, e.boss ? 4 : 2);
@@ -3252,6 +3270,7 @@ window.addEventListener('gamepadconnected', function (e) {
       comboCount += 1;
       var cbonus = 60 + wave * 8;
       score += cbonus;
+      if (ko) { ko.stats.score += cbonus; }
       comboFlash = 0.9;
       for (var ci = 0; ci < players.length; ci++) {
         var cp = players[ci];
@@ -3406,6 +3425,9 @@ window.addEventListener('gamepadconnected', function (e) {
     clearedWaves = wave;
     var bonus = wave * 50 + (wave % 5 === 0 ? 300 : 0);
     score += bonus;
+    /* 波次奖励属于团队成果，平摊进每名玩家的个人积分 */
+    var share = Math.round(bonus / players.length);
+    for (var si = 0; si < players.length; si++) { players[si].stats.score += share; }
     if (upBonusEl) { upBonusEl.textContent = fmt(bonus); }
     addFloat(cam.x + W / 2, cam.y + H * 0.44, '波次奖励 +' + bonus, '#8ef7c8');
 
@@ -6121,27 +6143,44 @@ window.addEventListener('gamepadconnected', function (e) {
     ctx.fillStyle = 'rgba(143,180,216,0.95)';
     ctx.fillText('得分 ' + fmt(score), hx, 84);
 
+    /* 个人战绩：P1/P2 各自的积分与击杀数，按玩家配色区分 */
+    ctx.font = '600 12px "Segoe UI","Microsoft YaHei",sans-serif';
+    var sx = hx;
+    for (var si = 0; si < players.length; si++) {
+      var sp = players[si];
+      ctx.fillStyle = sp.color;
+      var seg = sp.label + ' ' + fmt(sp.stats.score) + '分 · ' + sp.stats.kills + '杀';
+      if (si > 0) {
+        ctx.fillStyle = 'rgba(120,150,180,0.6)';
+        ctx.fillText('｜', sx, 106);
+        sx += 16;
+        ctx.fillStyle = sp.color;
+      }
+      ctx.fillText(seg, sx, 106);
+      sx += ctx.measureText(seg).width + 14;
+    }
+
     ctx.font = '600 12px "Segoe UI","Microsoft YaHei",sans-serif';
     if (pendingClear) {
       /* 扫尾阶段：敌人已清零，改为提示还差几件物品才能过关 */
       var pulseA = 0.72 + Math.sin(time * 6) * 0.28;
       ctx.fillStyle = 'rgba(255,194,71,' + pulseA.toFixed(2) + ')';
-      ctx.fillText('待拾取物品 ' + pickups.length + ' 件', hx, 104);
+      ctx.fillText('待拾取物品 ' + pickups.length + ' 件', hx, 128);
     } else {
       ctx.fillStyle = 'rgba(168,202,232,0.85)';
-      ctx.fillText('剩余目标 ' + (spawnList.length + enemies.length), hx, 104);
+      ctx.fillText('剩余目标 ' + (spawnList.length + enemies.length), hx, 128);
     }
 
     /* 场地名称：跟随地形轮换实时更新 */
     ctx.font = '600 11px "Segoe UI","Microsoft YaHei",sans-serif';
     ctx.fillStyle = 'rgba(150,205,240,0.9)';
-    ctx.fillText('场地 ' + terrainLabel, hx, 124);
+    ctx.fillText('场地 ' + terrainLabel, hx, 148);
 
     /* 连携次数：只在双人触发过之后显示 */
     if (mode === 'duo' && comboCount > 0) {
       ctx.font = '700 12px "Segoe UI","Microsoft YaHei",sans-serif';
       ctx.fillStyle = '#8ef7c8';
-      ctx.fillText('连携 ×' + comboCount, hx, 146);
+      ctx.fillText('连携 ×' + comboCount, hx, 170);
     }
 
     /* 双人观战提示 */
