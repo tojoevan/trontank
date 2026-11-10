@@ -178,11 +178,25 @@
   ⚠️ **所有坐标是 BASE_WW×BASE_WH（1728×972）下的绝对值**，`buildObstacles()` 会按 `kx = WW/BASE_WW`、`ky = WH/BASE_WH` 缩放后再实例化（圆形半径用 `min(kx,ky)` 防变形）。**新增地形/生成器一律按 1728×972 写，不要按当前世界尺寸写。**
   ⚠️ 双人出生点同理，已改为按比例（`WW × 480/1728`、`WW × 1248/1728`），不要改回绝对坐标。
 
+### 6.7.0 异形战场边界（arena）
+场地**不是矩形**，而是每关随机生成的凸多边形（`buildArena(seed)`，与地形共用一颗种子）。
+
+- 生成：9~12 个候选点，角度均分 + 抖动，半径系数 `0.56~1.00 × 0.47 × 世界尺寸`，再取 `convexHull()`；凸包退化时退回椭圆。**必须凸**——`confineToArena()` 用「逐边内法线推出」，凹多边形会在凹角来回弹。
+- 顶点顺序统一为**顺时针**（`arenaAreaSign() > 0`），内法线取 `(-ey, ex)/L`；`arenaDist(x,y)` 返回「到最近边界的内距」，正=场内。符号搞反会让所有实体被判定在场外，见 2026-11-11 日志。
+- 物理：`confineToArena(o, r)` 替换了原来所有的 `clamp(x, r, WW-r)`——玩家、敌人、拾取物、宝箱、武器架、炸弹都用它。函数开头先做一次 `arenaDist` 快判，实体在场地中央时直接返回，避免每帧多次迭代。
+- 子弹/炸弹出界：`arenaDist(...) < 0` 即销毁或引爆（不再用矩形边界）。
+- 刷怪：`edgeSpawn/bossSpawnPos` 的候选点若落在轮廓外，改走 `arenaSpawnFallback()`——场内随机点，并要求离玩家尽量远。
+- 障碍：`buildObstacles()` 里用 `obstacleFitsArena(o, 12)` 过滤，凸多边形下「四角都在内」即整块在内。地形是按矩形铺满底图的，不过滤会有一半障碍露在虚空里。
+- 渲染：`drawBackground()` 把地板（网格/刻度/光斑/扫描线）`clip` 到轮廓内，轮廓外是深色虚空 + 视差尘埃；边界画外发光 + 内侧亮线，再叠三层向内暗影，靠近时能感到「地面在收窄」。
+- 相机：`updateCamera()` 夹在 `arenaBB ± 40` 内（场地比视口窄时居中），避免镜头甩到世界角落的虚空。
+- 小地图直接画轮廓，是玩家判断本关形状的主要入口。
+- `?debug` 的 `current()` 会返回 `arena`（顶点）、`arenaSides`、`arenaBB`、`playerInset`（每个玩家到边界的内距，负值=出界）、`enemyOut`。
+
 ### 6.7.1 舞台尺寸（CSS）
 - 桌面（≥761px）：`width: min(98vw, 96vh*2.2)`、`height: min(96vh, 98vw/1.2)`，去掉 16:9 固定比例 → 屏幕利用率约 **94%**（改造前受 1100px 上限限制仅约 52%）。宽高比被夹在 1.2–2.2，避免超宽屏把战场拉成细带。
 - 窄屏（<761px）：维持 `aspect-ratio:16/9` 原逻辑，避免手机竖屏视野被拉成长条。
 - 全屏：`object-fit:fill`（逻辑分辨率已跟随比例，无需 contain，否则会留细黑边）；进出全屏监听 `fullscreenchange` 重算（此时窗口尺寸不变、变的是 `#stage`）。
-- 世界尺寸变化后由 `clampEntitiesToWorld()` 把实体拉回新边界；地形不立即重建，下一波 `buildObstacles` 时自动适配。
+- 世界尺寸变化后由 `clampEntitiesToWorld()` 用新尺寸重建场地轮廓、把实体推回轮廓内；地形不立即重建，下一波 `buildObstacles` 时自动适配。
 
 ### 6.8 手柄配置
 - **WebHID 过滤设备**（`requestGamepad` 的 `filters`）：Switch `vendorId 0x057e` 的 `productId 0x2009`(Pro Controller) / `0x2006`(Joy-Con L) / `0x2007`(Joy-Con R)。要支持其他蓝牙手柄，在此加 filter 并在 `hidBuildPseudo` 里加对应报告解析。

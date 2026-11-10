@@ -1093,6 +1093,9 @@ window.addEventListener('gamepadconnected', function (e) {
      地形不在此重建：它每 2 波随 buildObstacles 重构，届时自动按新世界缩放。 */
   function clampEntitiesToWorld() {
     var i, o;
+    /* 视口变化后场地多边形也要按新尺寸重算，否则玩家会被挤到轮廓外。
+       ⚠ 本函数在 arenaPts 初始化之前就会随 setupCanvas 调用，必须做防御 */
+    if (arenaPts && arenaPts.length >= 3) { buildArena(arenaSeed); }
     var lists = [players, enemies, pickups, chests, mounts];
     for (var k = 0; k < lists.length; k++) {
       var arr = lists[k];
@@ -1100,9 +1103,7 @@ window.addEventListener('gamepadconnected', function (e) {
       for (i = 0; i < arr.length; i++) {
         o = arr[i];
         if (!o) { continue; }
-        var m = (o.r || 0) + 20;
-        o.x = clamp(o.x, m, WW - m);
-        o.y = clamp(o.y, m, WH - m);
+        confineToArena(o, (o.r || 0) + 20);
       }
     }
   }
@@ -2074,22 +2075,163 @@ window.addEventListener('gamepadconnected', function (e) {
     if (n % 5 === 0) {
       var open = TERRAIN_SETS[TERRAIN_OPEN];
       data = { key: 'open', name: open.name, note: open.note, obstacles: open.obstacles, mounts: open.mounts, chests: open.chests };
+      data.seed = 900001 + n * 137;
     } else if (!CFG.terrainShuffle) {
       /* 旧行为：固定顺序轮换 */
       var legacy = 1 + (Math.floor((n - 1) / 2) % (TERRAIN_SETS.length - 1));
       var s = TERRAIN_SETS[legacy];
       data = { key: 'p' + legacy, name: s.name, note: s.note, obstacles: s.obstacles, mounts: s.mounts || [], chests: s.chests || [] };
+      data.seed = 700001 + n * 137;
     } else {
       var ordinal = n - Math.floor(n / 5);          // 去掉精英波后的序号
       var slot = Math.floor((ordinal - 1) / 2);      // 每两波一个槽位
       /* 挑战难度带本局种子 → 每局布局都不同；其余难度用固定种子 → 同一关每次一样 */
       var base = terrainRandomOrder() ? (runSeed * 7919) : 0;
       data = materializeTerrain(planDefForSlot(slot), base + slot * 104729);
+      data.seed = base + slot * 104729;
     }
 
     terrainAtWave[n] = data;
     return data;
   }
+
+  /* ==========================================================
+     3.6 异形战场边界（凸多边形）
+     ----------------------------------------------------------
+     场地不再是矩形：按关卡种子生成一个半径起伏很大的凸多边形，
+     玩家/敌人/子弹/掉落都被约束在轮廓内；轮廓之外画成虚空。
+     只支持凸多边形——凹多边形用「逐边推出」会在凹角来回弹。
+     ========================================================== */
+  var arenaPts = [];     // 世界坐标顶点，统一为顺时针（屏幕坐标下）
+  var arenaBB = { minX: 0, minY: 0, maxX: 0, maxY: 0, w: 0, h: 0 };
+  var arenaSeed = 1;
+
+  /* 凸包（Andrew），输入屏幕坐标点，输出凸包顶点（顺序待定） */
+  function convexHull(list) {
+    var pts = list.slice().sort(function (a, b) {
+      return (a.x === b.x) ? (a.y - b.y) : (a.x - b.x);
+    });
+    var cross = function (o, a, b) {
+      return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+    };
+    var lower = [], upper = [], i;
+    for (i = 0; i < pts.length; i++) {
+      while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], pts[i]) <= 0) { lower.pop(); }
+      lower.push(pts[i]);
+    }
+    for (i = pts.length - 1; i >= 0; i--) {
+      while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], pts[i]) <= 0) { upper.pop(); }
+      upper.push(pts[i]);
+    }
+    lower.pop();
+    upper.pop();
+    return lower.concat(upper);
+  }
+
+  /* 有符号面积（屏幕坐标下 >0 为顺时针） */
+  function arenaAreaSign(pts) {
+    var s = 0;
+    for (var i = 0; i < pts.length; i++) {
+      var a = pts[i], b = pts[(i + 1) % pts.length];
+      s += a.x * b.y - b.x * a.y;
+    }
+    return s;
+  }
+
+  function buildArena(seed) {
+    arenaSeed = seed;
+    var rng = mulberry32(seed);
+    var cx = WW / 2, cy = WH / 2;
+    var n = 9 + Math.floor(rng() * 4);              // 9~12 个候选点
+    var lobes = 2 + Math.floor(rng() * 2);          // 低频起伏圈数（2~3）
+    var phase = rng() * TAU;
+    var pts = [];
+    for (var i = 0; i < n; i++) {
+      var a = (i / n) * TAU + (rng() - 0.5) * (TAU / n) * 0.45;
+      /* 半径系数 0.56~1.00：一边明显收进来、另一边贴到近世界边缘，轮廓就不对称了 */
+      var k = 0.78 + 0.22 * Math.cos(a * lobes + phase) + (rng() - 0.5) * 0.14;
+      k = clamp(k, 0.56, 1.0);
+      pts.push({
+        x: cx + Math.cos(a) * WW * 0.47 * k,
+        y: cy + Math.sin(a) * WH * 0.47 * k
+      });
+    }
+    var hull = convexHull(pts);
+    /* 凸包退化（点几乎共线）时退回椭圆，保证一定有个能用的场地 */
+    if (hull.length < 5) {
+      hull = [];
+      for (var e = 0; e < 12; e++) {
+        var ea = (e / 12) * TAU;
+        hull.push({ x: cx + Math.cos(ea) * WW * 0.42, y: cy + Math.sin(ea) * WH * 0.42 });
+      }
+    }
+    if (arenaAreaSign(hull) < 0) { hull.reverse(); }
+
+    arenaPts = hull;
+    var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (var j = 0; j < hull.length; j++) {
+      if (hull[j].x < minX) { minX = hull[j].x; }
+      if (hull[j].x > maxX) { maxX = hull[j].x; }
+      if (hull[j].y < minY) { minY = hull[j].y; }
+      if (hull[j].y > maxY) { maxY = hull[j].y; }
+    }
+    arenaBB = { minX: minX, minY: minY, maxX: maxX, maxY: maxY, w: maxX - minX, h: maxY - minY };
+  }
+
+  /* 点到最近边界的内距（正=场内，0=线上，负=场外）。
+     顶点为顺时针，内部在每条边的右侧，故内法线取 (-ey, ex) */
+  function arenaDist(x, y) {
+    if (!arenaPts || arenaPts.length < 3) { return Infinity; }
+    var best = Infinity;
+    for (var i = 0; i < arenaPts.length; i++) {
+      var a = arenaPts[i], b = arenaPts[(i + 1) % arenaPts.length];
+      var ex = b.x - a.x, ey = b.y - a.y;
+      var L = Math.hypot(ex, ey) || 1;
+      var d = ((x - a.x) * (-ey) + (y - a.y) * ex) / L;
+      if (d < best) { best = d; }
+    }
+    return best;
+  }
+
+  /* 把圆限制在场地内；r 省略时取 o.r */
+  function confineToArena(o, r) {
+    var rr = (r === undefined) ? (o.r || 0) : r;
+    if (!arenaPts || arenaPts.length < 3) {
+      o.x = clamp(o.x, rr, WW - rr);
+      o.y = clamp(o.y, rr, WH - rr);
+      return;
+    }
+    /* 绝大多数实体都在场地中央：一次遍历就能确认不用调整，避免每帧多次迭代 */
+    if (arenaDist(o.x, o.y) >= rr) { return; }
+    for (var pass = 0; pass < 3; pass++) {
+      var moved = false;
+      for (var i = 0; i < arenaPts.length; i++) {
+        var a = arenaPts[i], b = arenaPts[(i + 1) % arenaPts.length];
+        var ex = b.x - a.x, ey = b.y - a.y;
+        var L = Math.hypot(ex, ey) || 1;
+        var nx = -ey / L, ny = ex / L;
+        var d = (o.x - a.x) * nx + (o.y - a.y) * ny;
+        if (d < rr) {
+          o.x += nx * (rr - d);
+          o.y += ny * (rr - d);
+          moved = true;
+        }
+      }
+      if (!moved) { break; }
+    }
+  }
+
+  /* 场地内的随机点：拒绝采样，尽量离边留出 pad */
+  function randomArenaPoint(rng, pad) {
+    var p = pad || 0;
+    for (var i = 0; i < 48; i++) {
+      var x = arenaBB.minX + rng() * arenaBB.w;
+      var y = arenaBB.minY + rng() * arenaBB.h;
+      if (arenaDist(x, y) > p) { return { x: x, y: y }; }
+    }
+    return { x: WW / 2, y: WH / 2 };
+  }
+
 
   /* 升级池：6 张，含两张武器向强化 */
   var UPGRADE_POOL = [
@@ -2196,6 +2338,9 @@ window.addEventListener('gamepadconnected', function (e) {
     currentTerrain = t;
     terrainLabel = t.name;
 
+    /* 每关换一次异形边界：与地形共用同一颗种子，同关卡同轮廓 */
+    buildArena((t.seed || 1) + 17);
+
     obstacles = [];
     /* 地形坐标是按 BASE_WW×BASE_WH 硬编码的，世界随视口变化后必须同比缩放，
        否则布局会挤到一角或跑出边界。圆半径用 kx/ky 的较小值，避免被拉成椭圆。 */
@@ -2205,7 +2350,7 @@ window.addEventListener('gamepadconnected', function (e) {
     var list = t.obstacles;
     for (var i = 0; i < list.length; i++) {
       var src = list[i];
-      obstacles.push({
+      var ob = {
         type: src.type,
         x: src.x * kx,
         y: src.y * ky,
@@ -2218,7 +2363,10 @@ window.addEventListener('gamepadconnected', function (e) {
         hit: 0,
         destructible: src.type === 'crate',
         seed: i * 1.73
-      });
+      };
+      /* 地形按矩形铺满整张底图，异形边界外的部分直接丢掉，否则会露在虚空里 */
+      if (!obstacleFitsArena(ob, 12)) { continue; }
+      obstacles.push(ob);
     }
 
     /* 墙面武器架：每波重新出现，拾取后本波不再刷新 */
@@ -2226,9 +2374,11 @@ window.addEventListener('gamepadconnected', function (e) {
     var ms = t.mounts || [];
     for (var k = 0; k < ms.length; k++) {
       var w = WEAPONS[ms[k].weapon];
+      var mpt = { x: ms[k].x * kx, y: ms[k].y * ky };
+      confineToArena(mpt, 26);
       mounts.push({
-        x: ms[k].x * kx,
-        y: ms[k].y * ky,
+        x: mpt.x,
+        y: mpt.y,
         weapon: ms[k].weapon,
         ammo: w.ammo,
         taken: false,
@@ -2240,9 +2390,11 @@ window.addEventListener('gamepadconnected', function (e) {
     chests = [];
     var cs = t.chests || [];
     for (var ci = 0; ci < cs.length; ci++) {
+      var cpt = { x: cs[ci].x * kx, y: cs[ci].y * ky };
+      confineToArena(cpt, 26);
       chests.push({
-        x: cs[ci].x * kx,
-        y: cs[ci].y * ky,
+        x: cpt.x,
+        y: cpt.y,
         opened: false,
         openT: 0,
         /* 开启后进入倒计时，归零即原地重新刷新，实现无限刷新 */
@@ -2253,6 +2405,18 @@ window.addEventListener('gamepadconnected', function (e) {
         phase: ci * 2.1
       });
     }
+  }
+
+  /* 障碍整体是否落在异形场地内：凸多边形下四角都在内即整块在内 */
+  function obstacleFitsArena(o, pad) {
+    if (!arenaPts || arenaPts.length < 3) { return true; }
+    var p = pad || 0;
+    if (o.r > 0) { return arenaDist(o.x, o.y) > o.r + p; }
+    var hw = (o.w || 0) / 2, hh = (o.h || 0) / 2;
+    return arenaDist(o.x - hw, o.y - hh) > p &&
+           arenaDist(o.x + hw, o.y - hh) > p &&
+           arenaDist(o.x - hw, o.y + hh) > p &&
+           arenaDist(o.x + hw, o.y + hh) > p;
   }
 
   function overlapsAnyObstacle(x, y, r) {
@@ -2589,8 +2753,7 @@ window.addEventListener('gamepadconnected', function (e) {
     /* 落点若压在墙柱上，立刻推出来，否则玩家靠不到 35px 内会捡不到 */
     var last = pickups[pickups.length - 1];
     resolveObstacles(last);
-    last.x = clamp(last.x, 24, WW - 24);
-    last.y = clamp(last.y, 24, WH - 24);
+    confineToArena(last, 24);
   }
 
   function applySupply(p, id) {
@@ -2699,8 +2862,7 @@ window.addEventListener('gamepadconnected', function (e) {
       pk.y += pk.vy * dt;
       pk.vx *= 0.9;
       pk.vy *= 0.9;
-      pk.x = clamp(pk.x, 24, WW - 24);
-      pk.y = clamp(pk.y, 24, WH - 24);
+      confineToArena(pk, 24);
 
       if (pk.arm > 0) { pk.arm -= dt; resolveObstacles(pk); continue; }
 
@@ -2834,13 +2996,11 @@ window.addEventListener('gamepadconnected', function (e) {
       p.y += ay * p.speed * dt;
     }
 
-    p.x = clamp(p.x, p.r + 6, WW - p.r - 6);
-    p.y = clamp(p.y, p.r + 6, WH - p.r - 6);
+    confineToArena(p, p.r + 6);
 
     /* 与障碍物碰撞：推出后再贴一次边界，避免被挤出场外 */
     resolveObstacles(p);
-    p.x = clamp(p.x, p.r + 6, WW - p.r - 6);
-    p.y = clamp(p.y, p.r + 6, WH - p.r - 6);
+    confineToArena(p, p.r + 6);
 
     if (p.inv > 0) { p.inv -= dt; }
     if (p.flash > 0) { p.flash -= dt; }
@@ -3070,10 +3230,9 @@ window.addEventListener('gamepadconnected', function (e) {
       b.rot += dt * 12;
 
       var hitWall = hitObstacleAt(b.x, b.y, b.r);
-      var out = (b.x < 12 || b.x > WW - 12 || b.y < 12 || b.y > WH - 12);
+      var out = (arenaDist(b.x, b.y) < b.r + 6);
       if (b.fuse <= 0 || hitWall || out) {
-        b.x = clamp(b.x, 18, WW - 18);
-        b.y = clamp(b.y, 18, WH - 18);
+        confineToArena(b, 18);
         explodeBomb(b);
         bombs.splice(i, 1);
       }
@@ -3291,7 +3450,25 @@ window.addEventListener('gamepadconnected', function (e) {
 
     pos.x = clamp(pos.x, 30, WW - 30);
     pos.y = clamp(pos.y, 30, WH - 30);
+    /* 异形场地：落在轮廓外的刷新点改成场内随机点，否则敌人会从虚空里走进来 */
+    if (arenaDist(pos.x, pos.y) < 34) { return arenaSpawnFallback(58); }
     return pos;
+  }
+
+  /* 场内兜底刷怪点：尽量离玩家远一点，避免贴脸刷新 */
+  function arenaSpawnFallback(pad) {
+    var best = null, bestD2 = -1;
+    for (var i = 0; i < 26; i++) {
+      var c = randomArenaPoint(Math.random, pad);
+      var near = Infinity;
+      for (var j = 0; j < players.length; j++) {
+        var d = dist2(c.x, c.y, players[j].x, players[j].y);
+        if (d < near) { near = d; }
+      }
+      if (near > bestD2) { bestD2 = near; best = c; }
+      if (near > 360 * 360) { return c; }
+    }
+    return best || { x: WW / 2, y: WH / 2 };
   }
 
   function bossSpawnPos() {
@@ -3309,6 +3486,7 @@ window.addEventListener('gamepadconnected', function (e) {
 
     pos.x = clamp(pos.x, 70, WW - 70);
     pos.y = clamp(pos.y, 70, WH - 70);
+    if (arenaDist(pos.x, pos.y) < 80) { return arenaSpawnFallback(100); }
     return pos;
   }
 
@@ -3449,8 +3627,7 @@ window.addEventListener('gamepadconnected', function (e) {
     e.blockObs = null;
     var hitObs = resolveObstacles(e);
     if (hitObs) { e.blockObs = hitObs; }
-    e.x = clamp(e.x, e.r + 2, WW - e.r - 2);
-    e.y = clamp(e.y, e.r + 2, WH - e.r - 2);
+    confineToArena(e, e.r + 2);
 
     /* 卡住检测：0.45 秒内几乎没位移，就设定绕行方向 */
     e.checkT += dt;
@@ -3498,11 +3675,11 @@ window.addEventListener('gamepadconnected', function (e) {
         var kx = q.x - e.x;
         var ky = q.y - e.y;
         var kl = Math.hypot(kx, ky) || 1;
-        q.x = clamp(q.x + (kx / kl) * 16, 20, WW - 20);
-        q.y = clamp(q.y + (ky / kl) * 16, 20, WH - 20);
+        q.x = q.x + (kx / kl) * 16;
+        q.y = q.y + (ky / kl) * 16;
+        confineToArena(q, 20);
         resolveObstacles(q);
-        q.x = clamp(q.x, q.r + 6, WW - q.r - 6);
-        q.y = clamp(q.y, q.r + 6, WH - q.r - 6);
+        confineToArena(q, q.r + 6);
       }
     }
   }
@@ -3535,8 +3712,7 @@ window.addEventListener('gamepadconnected', function (e) {
       var e = enemies[k];
       if (e.spawn > 0) { continue; }
       resolveObstacles(e);
-      e.x = clamp(e.x, e.r + 2, WW - e.r - 2);
-      e.y = clamp(e.y, e.r + 2, WH - e.r - 2);
+      confineToArena(e, e.r + 2);
     }
   }
 
@@ -3626,7 +3802,7 @@ window.addEventListener('gamepadconnected', function (e) {
           if (s < steps) {
             b.x += sx;
             b.y += sy;
-            if (b.x < -20 || b.x > WW + 20 || b.y < -20 || b.y > WH + 20) { dead = true; break; }
+            if (arenaDist(b.x, b.y) < -20) { dead = true; break; }
           }
         }
       }
@@ -3773,15 +3949,13 @@ window.addEventListener('gamepadconnected', function (e) {
         p.hp = Math.round(p.maxHp * CFG.reviveRatio);
         p.inv = 1.8;
         p.flash = 0;
-        p.x = clamp(p.x, 40, WW - 40);
-        p.y = clamp(p.y, 40, WH - 40);
+        confineToArena(p, 40);
         burst(p.x, p.y, p.color, 20, 180, 3);
         addFloat(p.x, p.y - 36, p.label + ' 重新上线', p.color);
       }
       /* 新地形可能正好落在脚下，直接推出，避免卡进墙里 */
       resolveObstacles(p);
-      p.x = clamp(p.x, p.r + 6, WW - p.r - 6);
-      p.y = clamp(p.y, p.r + 6, WH - p.r - 6);
+      confineToArena(p, p.r + 6);
     }
 
     /* 首波提示键位；换地形时提示场地名称 */
@@ -5167,15 +5341,21 @@ window.addEventListener('gamepadconnected', function (e) {
   /* ==========================================================
      11. 渲染
      ========================================================== */
-  function drawBackground() {
-    /* 底色 */
-    var grad = ctx.createLinearGradient(0, 0, 0, H);
-    grad.addColorStop(0, '#17283f');
-    grad.addColorStop(0.55, '#101c2e');
-    grad.addColorStop(1, '#0b1422');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, W, H);
 
+  /* 场地轮廓 → 屏幕坐标路径 */
+  function arenaPathScreen() {
+    ctx.beginPath();
+    for (var i = 0; i < arenaPts.length; i++) {
+      var p = arenaPts[i];
+      var sx = p.x - cam.x;
+      var sy = p.y - cam.y;
+      if (i === 0) { ctx.moveTo(sx, sy); } else { ctx.lineTo(sx, sy); }
+    }
+    ctx.closePath();
+  }
+
+  /* 场内地面：网格 + 大格刻度 + 光斑 + 扫描线（由 clip 裁在异形轮廓内） */
+  function drawFloor() {
     /* 随相机滚动的网格：偏移取模，保证远距离移动也不会累积误差 */
     var GS = 48;
     var ox = -(((cam.x % GS) + GS) % GS);
@@ -5210,16 +5390,6 @@ window.addEventListener('gamepadconnected', function (e) {
     }
     ctx.stroke();
 
-    /* 世界边界：贴边时显示一道警示线，避免玩家跑到地图外 */
-    ctx.strokeStyle = 'rgba(55,230,255,0.28)';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    if (cam.x <= 1) { ctx.moveTo(1, 0); ctx.lineTo(1, H); }
-    if (cam.x >= WW - W - 1) { ctx.moveTo(W - 1, 0); ctx.lineTo(W - 1, H); }
-    if (cam.y <= 1) { ctx.moveTo(0, 1); ctx.lineTo(W, 1); }
-    if (cam.y >= WH - H - 1) { ctx.moveTo(0, H - 1); ctx.lineTo(W, H - 1); }
-    ctx.stroke();
-
     /* 缓慢漂移的光斑 */
     var cx = W * 0.5 + Math.sin(time * 0.18) * 180;
     var cy = H * 0.45 + Math.cos(time * 0.14) * 90;
@@ -5237,6 +5407,86 @@ window.addEventListener('gamepadconnected', function (e) {
     lg.addColorStop(1, 'rgba(80,200,255,0)');
     ctx.fillStyle = lg;
     ctx.fillRect(0, sy, W, 90);
+  }
+
+  /* 异形场地边界：外发光 + 内侧亮线，贴边时给玩家明确的空间感 */
+  function drawArenaEdge() {
+    ctx.save();
+    arenaPathScreen();
+    ctx.strokeStyle = 'rgba(55,230,255,0.55)';
+    ctx.lineWidth = 3;
+    ctx.shadowColor = 'rgba(55,230,255,0.75)';
+    ctx.shadowBlur = 18;
+    ctx.stroke();
+
+    arenaPathScreen();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = 'rgba(170,240,255,0.55)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawBackground() {
+    var arenaOn = (state !== 'menu') && arenaPts && arenaPts.length >= 3;
+
+    /* 底色：场地外就是虚空，比场内更深 */
+    var grad = ctx.createLinearGradient(0, 0, 0, H);
+    if (arenaOn) {
+      grad.addColorStop(0, '#05080e');
+      grad.addColorStop(0.55, '#04060b');
+      grad.addColorStop(1, '#020408');
+    } else {
+      grad.addColorStop(0, '#17283f');
+      grad.addColorStop(0.55, '#101c2e');
+      grad.addColorStop(1, '#0b1422');
+    }
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
+
+    if (arenaOn) {
+      /* 虚空里缓慢漂移的尘埃：地板不透明会盖住场内部分，只在轮廓外可见，
+         免得轮廓外一片纯黑看起来像渲染出 bug */
+      ctx.save();
+      ctx.fillStyle = 'rgba(110,180,235,0.30)';
+      for (var di = 0; di < 52; di++) {
+        var dw = W + 80, dh = H + 80;
+        var dxp = ((di * 173.7 - cam.x * 0.22) % dw + dw) % dw - 40;
+        var dyp = ((di * 281.3 - cam.y * 0.22) % dh + dh) % dh - 40;
+        var ds = 1 + (di % 3) * 0.7;
+        ctx.fillRect(dxp, dyp, ds, ds);
+      }
+      ctx.restore();
+
+      /* 场内铺地板，clip 在异形轮廓内 → 轮廓外自然留成虚空 */
+      ctx.save();
+      arenaPathScreen();
+      ctx.clip();
+      var fg = ctx.createLinearGradient(0, 0, 0, H);
+      fg.addColorStop(0, '#17283f');
+      fg.addColorStop(0.55, '#101c2e');
+      fg.addColorStop(1, '#0b1422');
+      ctx.fillStyle = fg;
+      ctx.fillRect(0, 0, W, H);
+      drawFloor();
+
+      /* 边界内侧压一层暗影，游戏中即使边框在视野外，靠近时也能感到「地面在收窄」 */
+      ctx.save();
+      var EDGE_SHADE = [46, 30, 16];
+      for (var ei = 0; ei < EDGE_SHADE.length; ei++) {
+        arenaPathScreen();
+        ctx.lineWidth = EDGE_SHADE[ei];
+        ctx.strokeStyle = 'rgba(0,0,0,' + (0.16 + ei * 0.05) + ')';
+        ctx.stroke();
+      }
+      ctx.restore();
+
+      ctx.restore();
+
+      drawArenaEdge();
+    } else {
+      drawFloor();
+    }
 
     /* 四角边框装饰 */
     var m = 10;
@@ -6893,6 +7143,23 @@ window.addEventListener('gamepadconnected', function (e) {
     var oy = my + pad;
     var i;
 
+    /* 异形场地轮廓：让小地图一眼看出本关不是矩形 */
+    if (arenaPts && arenaPts.length >= 3) {
+      ctx.beginPath();
+      for (var ai = 0; ai < arenaPts.length; ai++) {
+        var ap = arenaPts[ai];
+        var apx = ox + ap.x * sx;
+        var apy = oy + ap.y * sy;
+        if (ai === 0) { ctx.moveTo(apx, apy); } else { ctx.lineTo(apx, apy); }
+      }
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(36,86,132,0.30)';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(90,225,255,0.55)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
     /* 地形障碍 */
     for (i = 0; i < obstacles.length; i++) {
       var o = obstacles[i];
@@ -7063,8 +7330,18 @@ window.addEventListener('gamepadconnected', function (e) {
 
   function updateCamera(dt) {
     var t = cameraTarget();
-    var tx = clamp(t.x - W / 2, 0, WW - W);
-    var ty = clamp(t.y - H / 2, 0, WH - H);
+    var tx, ty;
+    if (arenaPts && arenaPts.length >= 3) {
+      /* 镜头夹在异形场地的包围盒内：贴边时不会把镜头甩到世界角落的虚空里 */
+      var padC = 40;
+      var minX = arenaBB.minX - padC, maxX = arenaBB.maxX + padC;
+      var minY = arenaBB.minY - padC, maxY = arenaBB.maxY + padC;
+      tx = (maxX - minX <= W) ? ((minX + maxX - W) / 2) : clamp(t.x - W / 2, minX, maxX - W);
+      ty = (maxY - minY <= H) ? ((minY + maxY - H) / 2) : clamp(t.y - H / 2, minY, maxY - H);
+    } else {
+      tx = clamp(t.x - W / 2, 0, WW - W);
+      ty = clamp(t.y - H / 2, 0, WH - H);
+    }
     /* dt 越大跟得越紧；开局用 dt=1 直接对准，避免镜头滑入 */
     var k = clamp(dt * 10, 0, 1);
     cam.x += (tx - cam.x) * k;
@@ -7440,7 +7717,14 @@ window.addEventListener('gamepadconnected', function (e) {
           terrain: currentTerrain ? currentTerrain.name : '',
           obstacles: obstacles.length,
           chests: chests.length,
-          mounts: mounts.length
+          mounts: mounts.length,
+          arenaSides: arenaPts.length,
+          arenaBB: { w: Math.round(arenaBB.w), h: Math.round(arenaBB.h) },
+          /* 每个玩家到场地边缘的内距（负值=已经出界） */
+          playerInset: players.map(function (p) { return Math.round(arenaDist(p.x, p.y)); }),
+          enemyOut: enemies.filter(function (e) { return arenaDist(e.x, e.y) < -1; }).length,
+          /* 轮廓顶点，便于外部核对形状是否每关不同 */
+          arena: arenaPts.map(function (p) { return [Math.round(p.x), Math.round(p.y)]; })
         };
       },
       reroll: function () {
