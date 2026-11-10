@@ -128,7 +128,8 @@
   #help{z-index:30;}
   #keysPanel{z-index:35;}
   #upgradePanel{z-index:12;background:rgba(3,7,14,.72);}
-  #pausePanel{z-index:25;}
+  /* 暂停遮罩单独提亮：暂停时玩家要看清战场落位，其余弹窗维持深色保证可读性 */
+  #pausePanel{z-index:25;background:rgba(3,7,14,.5);}
   #resultPanel{z-index:26;}
 
   .panel{
@@ -720,6 +721,7 @@
   }
   .btn-row{
     display:flex;
+    flex-wrap:wrap;
     gap:.6em;
   }
   .btn-row .btn{flex:1;}
@@ -1006,9 +1008,8 @@
       <p class="muted-line">按 P 或 Esc 继续</p>
       <div class="btn-col" style="display:flex;flex-direction:column;gap:.6em;margin-top:1.3em;">
         <button class="btn primary" type="button" id="btnResume">继续</button>
-        <button class="btn" type="button" id="btnRestartPause">重开</button>
         <button class="btn ghost" type="button" id="btnKeysPause">按键设置</button>
-        <button class="btn ghost" type="button" id="btnQuit">返回开始页</button>
+        <button class="btn ghost" type="button" id="btnEndRun">结束本局</button>
       </div>
     </div>
   </div>
@@ -1046,6 +1047,7 @@
       </div>
 
       <div class="btn-row share-actions">
+        <button class="btn ghost hidden" type="button" id="btnContinue">继续本局</button>
         <button class="btn primary" type="button" id="btnAgain">再来一局</button>
         <button class="btn" type="button" id="btnSaveCard">保存分享卡</button>
         <button class="btn ghost" type="button" id="btnHome">返回开始页</button>
@@ -1305,7 +1307,10 @@ window.addEventListener('gamepadconnected', function (e) {
        而游戏/Gamepad API 用屏幕坐标（向上 = 负值），故必须取反，否则上下颠倒。
        ⚠ 只作用于 WebHID 通路；标准 Gamepad API 由系统/浏览器已标准化，不受此影响。
        若某只手柄接上后上下仍相反，把这个值在 true / false 间切换即可。 */
-    hidInvertY: true
+    hidInvertY: true,
+    /* 地形：每局洗牌，波次顺序不再固定。关掉则退回「固定顺序轮换」的旧行为。
+       开启后，固定关卡与程序化生成关卡混在同一条随机序列里，一轮走完才重复。 */
+    terrainShuffle: true
   };
 
   /* ----------------------------------------------------------
@@ -1704,7 +1709,387 @@ window.addEventListener('gamepadconnected', function (e) {
       ]
     }
   ];
-  var terrainIndex = 0;
+
+  /* ==========================================================
+     3.4 随机地形池（固定关卡 + 程序化生成）
+     ----------------------------------------------------------
+     固定关卡按基准坐标硬编码，布局稳定；程序化关卡每次用种子重算，
+     同一波内（含窗口缩放后重建）结果一致，跨波跨局则各不相同。
+     ========================================================== */
+  var TERRAIN_OPEN = 0;          // TERRAIN_SETS[0] 开阔场，精英波专用
+
+  var PROC_META = {
+    ring:     { name: '环柱裂隙', note: '柱群环绕 · 只留两处缺口' },
+    zigzag:   { name: '锯齿通道', note: '错位墙带 · 缺口逐层偏移' },
+    diagonal: { name: '斜断回廊', note: '斜向断墙 · 直线弹道被切碎' },
+    maze:     { name: '随机格栅', note: '格子随机生墙 · 每局都不一样' },
+    scatter:  { name: '柱群废墟', note: '散布柱体 · 开阔但杂乱' }
+  };
+
+  var TERRAIN_POOL = [];
+  (function buildTerrainPool() {
+    var i, k;
+    var presets = [], procs = [];
+    for (i = 1; i < TERRAIN_SETS.length; i++) {
+      presets.push({
+        key: 'p' + i, kind: 'preset', idx: i,
+        name: TERRAIN_SETS[i].name, note: TERRAIN_SETS[i].note
+      });
+    }
+    for (k in PROC_META) {
+      if (!PROC_META.hasOwnProperty(k)) { continue; }
+      procs.push({
+        key: 'g-' + k, kind: 'proc', gen: k,
+        name: PROC_META[k].name, note: PROC_META[k].note
+      });
+    }
+    /* 交错编织：程序化 → 预制 → 程序化 → 预制 …
+       固定顺序开局时也能「不规则 / 规则」交替，不会连着几关都是同一风格 */
+    var n = Math.max(presets.length, procs.length);
+    for (i = 0; i < n; i++) {
+      if (procs[i]) { TERRAIN_POOL.push(procs[i]); }
+      if (presets[i]) { TERRAIN_POOL.push(presets[i]); }
+    }
+  })();
+
+  var terrainPlan = [];        // 本局洗牌后的地形序列（不含开阔场）
+  var terrainBySlot = {};      // 槽位 → 地形定义，用于避免跨轮衔接处重复
+  var terrainAtWave = {};      // 波次 → 已生成的地形数据（同波重建结果一致）
+  var currentTerrain = null;   // 当前波实际使用的地形
+  var runSeed = 1;             // 本局随机种子
+
+  /* 出生点保护区（基准坐标）：任何地形都不许把玩家压在墙里。
+     半径按「玩家半径 15 + 一圈可站立的余量」定，过大会把环阵、长墙的相邻段一起删掉 */
+  var SPAWN_SAFE = [
+    { x: 864,  y: 603, r: 84 },   // 单人出生点
+    { x: 480,  y: 603, r: 72 },   // 双人 1P
+    { x: 1248, y: 603, r: 72 }    // 双人 2P
+  ];
+
+  /* 确定性伪随机：同一 seed 必得同一序列，保证 resize 重建地形时不跳变 */
+  function mulberry32(a) {
+    return function () {
+      a |= 0;
+      a = (a + 0x6D2B79F5) | 0;
+      var t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  function inSpawnSafe(x, y, pad) {
+    for (var i = 0; i < SPAWN_SAFE.length; i++) {
+      var s = SPAWN_SAFE[i];
+      var rr = s.r + (pad || 0);
+      var dx = x - s.x, dy = y - s.y;
+      if (dx * dx + dy * dy < rr * rr) { return true; }
+    }
+    return false;
+  }
+
+  function obstacleBlockRadius(o) {
+    return (o.r > 0) ? o.r : Math.max(o.w || 0, o.h || 0) / 2;
+  }
+
+  function obstacleOverlapsCircle(o, x, y, r) {
+    var dx = x - o.x, dy = y - o.y;
+    if (o.r > 0) {
+      var rr = o.r + r;
+      return dx * dx + dy * dy < rr * rr;
+    }
+    return Math.abs(dx) < (o.w || 0) / 2 + r && Math.abs(dy) < (o.h || 0) / 2 + r;
+  }
+
+  /* ---------------- 程序化布局（基准世界 1728×972） ---------------- */
+  var PROC_GENS = {
+    /* 环形柱阵：中心留空，环上留两处连续缺口，逼玩家绕圈找角度 */
+    ring: function (rng) {
+      var cx = 864, cy = 486;
+      var R = 248 + rng() * 84;
+      var n = 8 + Math.floor(rng() * 4);
+      var gap = Math.floor(rng() * n);
+      var obstacles = [];
+      for (var i = 0; i < n; i++) {
+        if (i === gap || i === (gap + 1) % n) { continue; }
+        var a = (i / n) * TAU + (rng() - 0.5) * 0.06;
+        obstacles.push({
+          type: 'pillar',
+          x: cx + Math.cos(a) * R,
+          y: cy + Math.sin(a) * R * 0.86,
+          r: 26 + rng() * 10
+        });
+      }
+      for (var c = 0; c < 3; c++) {
+        var ca = rng() * TAU;
+        var cr = R + 140 + rng() * 90;
+        obstacles.push({
+          type: 'crate',
+          x: clamp(cx + Math.cos(ca) * cr, 140, 1588),
+          y: clamp(cy + Math.sin(ca) * cr * 0.86, 130, 840),
+          w: 40, h: 40, hp: 60
+        });
+      }
+      return { obstacles: obstacles };
+    },
+
+    /* 锯齿通道：三层横墙，每层留一处缺口，缺口逐层左右错开 */
+    zigzag: function (rng) {
+      var obstacles = [];
+      var spanL = 170, spanR = 1558;
+      for (var r = 0; r < 3; r++) {
+        var y = 208 + r * 284 + (rng() - 0.5) * 44;
+        var gapW = 190 + rng() * 96;
+        var gapC = 330 + rng() * 1068;
+        var lEnd = gapC - gapW / 2;
+        var rStart = gapC + gapW / 2;
+        if (lEnd > spanL + 50) {
+          obstacles.push({ type: 'wall', x: (spanL + lEnd) / 2, y: y, w: lEnd - spanL, h: 22 });
+        }
+        if (rStart < spanR - 50) {
+          obstacles.push({ type: 'wall', x: (rStart + spanR) / 2, y: y, w: spanR - rStart, h: 22 });
+        }
+      }
+      for (var p = 0; p < 3; p++) {
+        obstacles.push({
+          type: 'pillar',
+          x: 260 + rng() * 1208,
+          y: 150 + rng() * 672,
+          r: 22 + rng() * 12
+        });
+      }
+      return { obstacles: obstacles };
+    },
+
+    /* 斜断回廊：短墙沿斜线排布并随机断口，形成不规则的斜向遮挡 */
+    diagonal: function (rng) {
+      var obstacles = [];
+      for (var l = 0; l < 2; l++) {
+        var dir = (rng() < 0.5) ? 1 : -1;
+        var x0 = 300 + rng() * 280 + l * 520;
+        var y0 = 250 + rng() * 170;
+        for (var s = 0; s < 7; s++) {
+          if (rng() < 0.16) { continue; }
+          obstacles.push({
+            type: 'wall',
+            x: x0 + s * 44,
+            y: y0 + s * dir * 26,
+            w: 52, h: 15
+          });
+        }
+      }
+      for (var p = 0; p < 2; p++) {
+        obstacles.push({
+          type: 'crate',
+          x: 220 + rng() * 1288,
+          y: 170 + rng() * 632,
+          w: 40, h: 40, hp: 60
+        });
+      }
+      return { obstacles: obstacles };
+    },
+
+    /* 随机格栅：网格里随机生出横竖短墙，密度受控，不会封死通路 */
+    maze: function (rng) {
+      var obstacles = [];
+      var cols = 4, rows = 3;
+      var cw = BASE_WW / cols, ch = BASE_WH / rows;
+      for (var r = 0; r < rows; r++) {
+        for (var c = 0; c < cols; c++) {
+          if (rng() < 0.42) { continue; }
+          var cx = cw * (c + 0.5) + (rng() - 0.5) * 42;
+          var cy = ch * (r + 0.5) + (rng() - 0.5) * 42;
+          if (rng() < 0.55) {
+            obstacles.push({ type: 'wall', x: cx, y: cy, w: 140 + rng() * 70, h: 20 });
+          } else {
+            obstacles.push({ type: 'wall', x: cx, y: cy, w: 20, h: 108 + rng() * 72 });
+          }
+        }
+      }
+      for (var k = 0; k < 3; k++) {
+        obstacles.push({
+          type: 'crate',
+          x: 200 + rng() * 1328,
+          y: 160 + rng() * 652,
+          w: 40, h: 40, hp: 60
+        });
+      }
+      return { obstacles: obstacles };
+    },
+
+    /* 柱群废墟：纯随机散布，最“不规则”的一种，靠数量形成掩体迷宫 */
+    scatter: function (rng) {
+      var obstacles = [];
+      var n = 12 + Math.floor(rng() * 5);
+      for (var i = 0; i < n; i++) {
+        var x = 170 + rng() * 1388;
+        var y = 150 + rng() * 672;
+        if (rng() < 0.3) {
+          obstacles.push({ type: 'crate', x: x, y: y, w: 40, h: 40, hp: 60 });
+        } else {
+          obstacles.push({ type: 'pillar', x: x, y: y, r: 22 + rng() * 16 });
+        }
+      }
+      return { obstacles: obstacles };
+    }
+  };
+
+  /* 把轴对齐的长墙拆成若干错位短段，做出「锯齿/错台」的不规则轮廓。
+     碰撞仍是 AABB，拆段只在厚度方向错开、沿墙方向首尾相接，
+     因此不会出现能钻过去或能打穿的缝隙。 */
+  function jaggedObstacles(list, rng) {
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      var o = list[i];
+      var w = o.w || 0, h = o.h || 0;
+      var long = Math.max(w, h), thin = Math.min(w, h);
+      if (o.type !== 'wall' || long < 110 || thin > 40) { out.push(o); continue; }
+
+      var k = Math.max(2, Math.min(8, Math.round(long / 150)));
+      var seg = long / k;
+      var amp = Math.max(10, Math.min(30, seg * 0.28));
+      var horiz = w >= h;
+      for (var s = 0; s < k; s++) {
+        var t = ((s + 0.5) / k - 0.5) * long;        // 相对原中心的偏移
+        var jitter = (rng() - 0.5) * 2 * amp;        // 厚度方向错台
+        if (horiz) {
+          out.push({ type: 'wall', x: o.x + t, y: o.y + jitter, w: seg + 2, h: h });
+        } else {
+          out.push({ type: 'wall', x: o.x + jitter, y: o.y + t, w: w, h: seg + 2 });
+        }
+      }
+    }
+    return out;
+  }
+
+  /* 清掉压在出生圈里的障碍。碎墙会把墙推向出生点，所以手工关卡也要过一遍。
+     pad：额外余量，程序化地形留 26 防止开局贴脸；
+     fixedR：直接指定判定半径，手工关卡墙位本是人调的，只要保证「玩家不生在墙里」即可 */
+  function clearSpawnObstacles(list, pad, fixedR) {
+    var extra = (pad === undefined) ? 26 : pad;
+    var kept = [], i, si, o, sp, rr, blocked;
+    for (i = 0; i < list.length; i++) {
+      o = list[i];
+      blocked = false;
+      for (si = 0; si < SPAWN_SAFE.length; si++) {
+        sp = SPAWN_SAFE[si];
+        rr = (fixedR === undefined) ? (sp.r + extra) : fixedR;
+        /* 用「障碍形状 vs 出生圈」的真实重叠判定，而不是中心点距离：
+           长横墙的中心可能离出生点很远，但墙体本身并不挡人，按中心判会误删大片墙体 */
+        if (obstacleOverlapsCircle(o, sp.x, sp.y, rr)) { blocked = true; break; }
+      }
+      if (!blocked) { kept.push(o); }
+    }
+    return kept;
+  }
+
+  /* 清理出生区 + 在空地上放宝箱/武器架，供程序化地形复用 */
+  function decorateProcTerrain(rng, raw) {
+    var kept = clearSpawnObstacles(raw);
+    var i;
+    var spots = [];
+    var tries = 0;
+    while (spots.length < 4 && tries < 240) {
+      tries++;
+      var x = 160 + rng() * (BASE_WW - 320);
+      var y = 150 + rng() * (BASE_WH - 300);
+      if (inSpawnSafe(x, y, 74)) { continue; }
+      var ok = true;
+      for (i = 0; i < kept.length; i++) {
+        if (obstacleOverlapsCircle(kept[i], x, y, 58)) { ok = false; break; }
+      }
+      if (!ok) { continue; }
+      for (i = 0; i < spots.length; i++) {
+        var dx = spots[i].x - x, dy = spots[i].y - y;
+        if (dx * dx + dy * dy < 230 * 230) { ok = false; break; }
+      }
+      if (ok) { spots.push({ x: x, y: y }); }
+    }
+    return { obstacles: kept, spots: spots };
+  }
+
+  /* 把地形定义变成可直接使用的数据（固定关卡也过一遍碎墙处理，轮廓不再方方正正） */
+  function materializeTerrain(def, seed) {
+    var rng = mulberry32(seed);
+    if (def.kind === 'preset') {
+      var s = TERRAIN_SETS[def.idx];
+      return {
+        key: def.key, name: def.name, note: def.note,
+        /* 判定半径 = 玩家半径 15 + 8 余量：只保证不生在墙里，不会删掉贴边的手调墙位 */
+        obstacles: clearSpawnObstacles(jaggedObstacles(s.obstacles, rng), 0, 23),
+        mounts: s.mounts || [], chests: s.chests || []
+      };
+    }
+    var made = PROC_GENS[def.gen](rng);
+    var deco = decorateProcTerrain(rng, jaggedObstacles(made.obstacles || [], rng));
+    var mounts = [];
+    var chests = [];
+    if (deco.spots[0]) { mounts.push({ x: deco.spots[0].x, y: deco.spots[0].y, weapon: 'scatter' }); }
+    if (deco.spots[1]) { mounts.push({ x: deco.spots[1].x, y: deco.spots[1].y, weapon: 'beam' }); }
+    if (deco.spots[2]) { chests.push({ x: deco.spots[2].x, y: deco.spots[2].y }); }
+    if (deco.spots[3]) { chests.push({ x: deco.spots[3].x, y: deco.spots[3].y }); }
+    return { key: def.key, name: def.name, note: def.note, obstacles: deco.obstacles, mounts: mounts, chests: chests };
+  }
+
+  /* 关卡顺序是否随机：只有「挑战」难度每局洗牌，另外两档保持固定序列（方便熟悉节奏） */
+  function terrainRandomOrder() {
+    return !!CFG.terrainShuffle && difficulty === 'hard';
+  }
+
+  /* 每局开局调用一次。挑战难度洗牌；其余难度直接按池子的固定交错顺序走。
+     池内每种地形只出现一次，一轮（10 槽 ≈ 20 波）走完才重复 */
+  function shuffleTerrainPlan() {
+    terrainPlan = TERRAIN_POOL.slice();
+    terrainBySlot = {};
+    terrainAtWave = {};
+    if (!terrainRandomOrder()) { return; }
+    var i, j, t;
+    for (i = terrainPlan.length - 1; i > 0; i--) {
+      j = Math.floor(Math.random() * (i + 1));
+      t = terrainPlan[i]; terrainPlan[i] = terrainPlan[j]; terrainPlan[j] = t;
+    }
+  }
+
+  function planDefForSlot(slot) {
+    if (terrainBySlot[slot]) { return terrainBySlot[slot]; }
+    if (!terrainPlan.length) { shuffleTerrainPlan(); }
+    var len = terrainPlan.length;
+    var idx = slot % len;
+    var def = terrainPlan[idx];
+    /* 一轮走完接下一轮时，避免与上一槽撞成同一张 */
+    var prev = terrainBySlot[slot - 1];
+    if (prev && def.key === prev.key && len > 1) {
+      idx = (idx + 1) % len;
+      def = terrainPlan[idx];
+    }
+    terrainBySlot[slot] = def;
+    return def;
+  }
+
+  /* 波次 → 地形。精英波固定开阔场；其余每两波共用一个槽位，
+     槽位顺序来自本局洗牌结果，因此每局的闯关顺序都不一样 */
+  function terrainForWave(n) {
+    if (terrainAtWave[n]) { return terrainAtWave[n]; }
+
+    var data;
+    if (n % 5 === 0) {
+      var open = TERRAIN_SETS[TERRAIN_OPEN];
+      data = { key: 'open', name: open.name, note: open.note, obstacles: open.obstacles, mounts: open.mounts, chests: open.chests };
+    } else if (!CFG.terrainShuffle) {
+      /* 旧行为：固定顺序轮换 */
+      var legacy = 1 + (Math.floor((n - 1) / 2) % (TERRAIN_SETS.length - 1));
+      var s = TERRAIN_SETS[legacy];
+      data = { key: 'p' + legacy, name: s.name, note: s.note, obstacles: s.obstacles, mounts: s.mounts || [], chests: s.chests || [] };
+    } else {
+      var ordinal = n - Math.floor(n / 5);          // 去掉精英波后的序号
+      var slot = Math.floor((ordinal - 1) / 2);      // 每两波一个槽位
+      /* 挑战难度带本局种子 → 每局布局都不同；其余难度用固定种子 → 同一关每次一样 */
+      var base = terrainRandomOrder() ? (runSeed * 7919) : 0;
+      data = materializeTerrain(planDefForSlot(slot), base + slot * 104729);
+    }
+
+    terrainAtWave[n] = data;
+    return data;
+  }
 
   /* 升级池：6 张，含两张武器向强化 */
   var UPGRADE_POOL = [
@@ -1755,6 +2140,8 @@ window.addEventListener('gamepadconnected', function (e) {
   var shake = 0;
   var time = 0;
   var pausedFrom = 'playing';
+  var settleMid = false;       // 本次结算是否来自「暂停 → 重开」（中途结算，可继续本局）
+  var settleBack = 'playing';  // 中途结算时，继续本局要回到的状态
   var last = performance.now();
 
   /* 武器架、宝箱、炸弹与爆炸状态 */
@@ -1798,17 +2185,16 @@ window.addEventListener('gamepadconnected', function (e) {
   /* ==========================================================
      3.5 障碍物与碰撞
      ========================================================== */
-  /* 波次 → 地形：精英波固定开阔场，其余 5 套每 2 波轮换 */
-  function terrainForWave(n) {
-    if (n % 5 === 0) { return 0; }
-    return 1 + (Math.floor((n - 1) / 2) % (TERRAIN_SETS.length - 1));
-  }
-
   function buildObstacles(n) {
-    var idx = 0;
-    if (typeof n === 'number') { idx = terrainForWave(n); }
-    terrainIndex = idx;
-    terrainLabel = TERRAIN_SETS[idx].name;
+    var t;
+    if (typeof n === 'number') {
+      t = terrainForWave(n);
+    } else {
+      var open = TERRAIN_SETS[TERRAIN_OPEN];
+      t = { key: 'open', name: open.name, note: open.note, obstacles: open.obstacles, mounts: open.mounts, chests: open.chests };
+    }
+    currentTerrain = t;
+    terrainLabel = t.name;
 
     obstacles = [];
     /* 地形坐标是按 BASE_WW×BASE_WH 硬编码的，世界随视口变化后必须同比缩放，
@@ -1816,7 +2202,7 @@ window.addEventListener('gamepadconnected', function (e) {
     var kx = WW / BASE_WW;
     var ky = WH / BASE_WH;
     var kr = Math.min(kx, ky);
-    var list = TERRAIN_SETS[idx].obstacles;
+    var list = t.obstacles;
     for (var i = 0; i < list.length; i++) {
       var src = list[i];
       obstacles.push({
@@ -1837,7 +2223,7 @@ window.addEventListener('gamepadconnected', function (e) {
 
     /* 墙面武器架：每波重新出现，拾取后本波不再刷新 */
     mounts = [];
-    var ms = TERRAIN_SETS[idx].mounts || [];
+    var ms = t.mounts || [];
     for (var k = 0; k < ms.length; k++) {
       var w = WEAPONS[ms[k].weapon];
       mounts.push({
@@ -1852,7 +2238,7 @@ window.addEventListener('gamepadconnected', function (e) {
 
     /* 地面宝箱：每波刷新，碰触开启后随机开出一把武器 */
     chests = [];
-    var cs = TERRAIN_SETS[idx].chests || [];
+    var cs = t.chests || [];
     for (var ci = 0; ci < cs.length; ci++) {
       chests.push({
         x: cs[ci].x * kx,
@@ -3366,10 +3752,10 @@ window.addEventListener('gamepadconnected', function (e) {
     }
     spawnTimer = 0.45;
 
-    /* 地形：每 2 波重构一次，精英波固定开阔场 */
-    var prevTerrain = terrainIndex;
+    /* 地形：每 2 波重构一次，精英波固定开阔场；顺序按本局洗牌结果推进 */
+    var prevKey = currentTerrain ? currentTerrain.key : '';
     buildObstacles(n);
-    var terrainChanged = (n > 1) && (terrainIndex !== prevTerrain);
+    var terrainChanged = (n > 1) && !!currentTerrain && (currentTerrain.key !== prevKey);
     if (terrainChanged) {
       for (i = 0; i < obstacles.length; i++) {
         addRing(obstacles[i].x, obstacles[i].y, 6, 52, '#37e6ff', 0.45, 2);
@@ -3405,7 +3791,7 @@ window.addEventListener('gamepadconnected', function (e) {
         ? ('1P 青色：' + bindSummary(binds.p1) + '　·　2P 橙色：' + bindSummary(binds.p2))
         : ('键位：' + bindSummary(binds.p1) + '　·　方向键也可移动');
     } else if (terrainChanged) {
-      subText = '场地重构 · ' + TERRAIN_SETS[terrainIndex].name + '　' + TERRAIN_SETS[terrainIndex].note;
+      subText = '场地重构 · ' + currentTerrain.name + '　' + currentTerrain.note;
     }
 
     banner = {
@@ -3798,6 +4184,9 @@ window.addEventListener('gamepadconnected', function (e) {
     explosions = [];
     toast = null;
     lastReward = '';
+    /* 新的一局：重新掷种子并洗牌地形序列，因此每局的关卡顺序都不同 */
+    runSeed = Math.floor(Math.random() * 2147483647) + 1;
+    shuffleTerrainPlan();
     buildObstacles(1);
     for (var pi = 0; pi < players.length; pi++) {
       addRing(players[pi].x, players[pi].y, 8, 58, players[pi].color, 0.5, 2);
@@ -3815,6 +4204,7 @@ window.addEventListener('gamepadconnected', function (e) {
     upgradeCards = [];
     banner = null;
     shake = 0;
+    settleMid = false;
 
     hideEl(menuEl);
     hideEl(helpEl);
@@ -3843,10 +4233,16 @@ window.addEventListener('gamepadconnected', function (e) {
     return '见习清剿员';
   }
 
-  function endGame() {
+  /* fromPause = true：暂停面板里点「重开」，属于「中途结算」——
+     同样出一张修复报告分享卡，但多给一个「继续本局」退路，避免手滑丢进度 */
+  function endGame(fromPause) {
     if (state === 'result') { return; }
+    /* 继续本局要回到的状态：暂停中取暂停前的状态，否则就是当前状态 */
+    var prev = (state === 'paused') ? pausedFrom : state;
     state = 'result';
-    Sfx.over();
+    settleMid = !!fromPause;
+    settleBack = prev;
+    if (settleMid) { Sfx.ui(); } else { Sfx.over(); }
 
     var best = getBest(mode);
     var isNew = score > best;
@@ -3866,6 +4262,8 @@ window.addEventListener('gamepadconnected', function (e) {
     hideEl(pauseEl);
     hideEl(upgradeEl);
     showEl(resultEl);
+    /* 中途结算才给「继续本局」，阵亡结算没有退路 */
+    if (btnContinue) { btnContinue.classList.toggle('hidden', !settleMid); }
     updateTools();
     refreshBest();
   }
@@ -4091,6 +4489,7 @@ window.addEventListener('gamepadconnected', function (e) {
     duoShield = false;
     comboFlash = 0;
     pendingClear = false;
+    settleMid = false;
 
     hideEl(pauseEl);
     hideEl(upgradeEl);
@@ -4315,7 +4714,10 @@ window.addEventListener('gamepadconnected', function (e) {
       return;
     }
     if (code === 'KeyR') {
-      startGame(mode);
+      /* 局中按 R 与暂停面板的「重开」一致：先出中途结算卡，避免进度无声丢失；
+         结算页按 R 则是「再来一局」 */
+      if (state === 'result') { startGame(mode); }
+      else { endGame(true); }
       return;
     }
     if (state === 'intermission') {
@@ -6123,64 +6525,51 @@ window.addEventListener('gamepadconnected', function (e) {
     ctx.globalAlpha = 1;
   }
 
+  /* 把玩家色 hex 转成带 alpha 的 rgba，供卡片渐隐描边使用 */
+  function hexA(hex, a) {
+    var h = String(hex).replace('#', '');
+    if (h.length === 3) { h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2]; }
+    var n = parseInt(h, 16);
+    if (!isFinite(n)) { return 'rgba(255,255,255,' + a + ')'; }
+    return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+  }
+
+
   function drawHUD() {
     ctx.save();
     ctx.textAlign = 'left';
     ctx.textBaseline = 'alphabetic';
 
-    /* 左上角让给小地图，文字整体右移 */
-    var hx = 190;
+    /* 左上角：公共信息（波次 / 得分 / 剩余目标与场地 / 连携）
+       顶部中间让给居中的小地图，P1、P2 的个人数据下沉到左下 / 右下状态卡 */
+    var cx = 22;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
 
-    ctx.font = '600 12px "Segoe UI","Microsoft YaHei",sans-serif';
-    ctx.fillStyle = 'rgba(186,216,242,0.78)';
-    ctx.fillText((mode === 'solo' ? '单人模式' : '双人同屏') + ' · ' + DIFFS[difficulty].label, hx, 30);
-
-    ctx.font = '800 27px "Segoe UI","Microsoft YaHei",sans-serif';
+    ctx.font = '800 24px "Segoe UI","Microsoft YaHei",sans-serif';
     ctx.fillStyle = '#eaf6ff';
-    ctx.fillText('第 ' + wave + ' 波', hx, 60);
+    ctx.fillText('第 ' + wave + ' 波', cx, 30);
 
-    ctx.font = '600 14px "Segoe UI","Microsoft YaHei",sans-serif';
+    ctx.font = '600 13px "Segoe UI","Microsoft YaHei",sans-serif';
     ctx.fillStyle = 'rgba(143,180,216,0.95)';
-    ctx.fillText('得分 ' + fmt(score), hx, 84);
+    ctx.fillText('得分 ' + fmt(score), cx, 50);
 
-    /* 个人战绩：P1/P2 各自的积分与击杀数，按玩家配色区分 */
-    ctx.font = '600 12px "Segoe UI","Microsoft YaHei",sans-serif';
-    var sx = hx;
-    for (var si = 0; si < players.length; si++) {
-      var sp = players[si];
-      ctx.fillStyle = sp.color;
-      var seg = sp.label + ' ' + fmt(sp.stats.score) + '分 · ' + sp.stats.kills + '杀';
-      if (si > 0) {
-        ctx.fillStyle = 'rgba(120,150,180,0.6)';
-        ctx.fillText('｜', sx, 106);
-        sx += 16;
-        ctx.fillStyle = sp.color;
-      }
-      ctx.fillText(seg, sx, 106);
-      sx += ctx.measureText(seg).width + 14;
-    }
-
-    ctx.font = '600 12px "Segoe UI","Microsoft YaHei",sans-serif';
+    ctx.font = '600 11px "Segoe UI","Microsoft YaHei",sans-serif';
     if (pendingClear) {
       /* 扫尾阶段：敌人已清零，改为提示还差几件物品才能过关 */
       var pulseA = 0.72 + Math.sin(time * 6) * 0.28;
       ctx.fillStyle = 'rgba(255,194,71,' + pulseA.toFixed(2) + ')';
-      ctx.fillText('待拾取物品 ' + pickups.length + ' 件', hx, 128);
+      ctx.fillText('待拾取物品 ' + pickups.length + ' 件', cx, 68);
     } else {
-      ctx.fillStyle = 'rgba(168,202,232,0.85)';
-      ctx.fillText('剩余目标 ' + (spawnList.length + enemies.length), hx, 128);
+      ctx.fillStyle = 'rgba(168,202,232,0.8)';
+      ctx.fillText('剩余目标 ' + (spawnList.length + enemies.length) + '　·　场地 ' + terrainLabel, cx, 68);
     }
-
-    /* 场地名称：跟随地形轮换实时更新 */
-    ctx.font = '600 11px "Segoe UI","Microsoft YaHei",sans-serif';
-    ctx.fillStyle = 'rgba(150,205,240,0.9)';
-    ctx.fillText('场地 ' + terrainLabel, hx, 148);
 
     /* 连携次数：只在双人触发过之后显示 */
     if (mode === 'duo' && comboCount > 0) {
       ctx.font = '700 12px "Segoe UI","Microsoft YaHei",sans-serif';
       ctx.fillStyle = '#8ef7c8';
-      ctx.fillText('连携 ×' + comboCount, hx, 170);
+      ctx.fillText('连携 ×' + comboCount, cx, 86);
     }
 
     /* 双人观战提示 */
@@ -6198,70 +6587,270 @@ window.addEventListener('gamepadconnected', function (e) {
       }
     }
 
-    /* 底部：每名玩家的武器、弹药与炸弹 */
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'bottom';
-    var baseY = (players.length > 1) ? H - 46 : H - 46;
-    for (var pi = 0; pi < players.length; pi++) {
-      var p = players[pi];
-      var w = WEAPONS[p.weapon];
-      var lineY = baseY - (players.length - 1 - pi) * 22;
+    /* ==========================================================
+       左下 / 右下：P1 / P2 个人状态卡
+       第一行：标签 + 个人积分 + 击杀（超频倒计时也放这行右侧）
+       第二行：武器 / 弹药 / 炸弹 / 背包方块
+       双人分居左右下角，单人只有左侧；窄屏按比例压缩内部间距
+       ========================================================== */
+    ctx.textBaseline = 'alphabetic';
+    var CARD_PAD = 22;
+    var CARD_BOT = H - 20;
+    var CARD_H = 52;
+    var CARD_MIN_W = 176;
 
-      ctx.font = '700 12px "Segoe UI","Microsoft YaHei",sans-serif';
-      ctx.fillStyle = p.alive ? p.color : 'rgba(150,170,190,0.5)';
-      ctx.fillText(p.label, 22, lineY);
-
-      ctx.font = '600 12px "Segoe UI","Microsoft YaHei",sans-serif';
+    /* 卡片宽度自适应：宽度 = 两行内容的实际占位 + 右侧 12px 内边距。
+       宽度贴合内容后，右侧就不会再留出「空板」。
+       切换武器、分数变长、超频生效都会改变目标宽度，所以用每帧缓动过渡，
+       避免卡片啪一下跳宽跳窄。 */
+    function measureCardWidth(p) {
       if (p.downed) {
-        ctx.fillStyle = 'rgba(255,194,71,0.95)';
-        ctx.fillText('倒地 · 等待救援', 48, lineY);
-      } else {
-        ctx.fillStyle = p.alive ? 'rgba(214,236,255,0.92)' : 'rgba(150,170,190,0.5)';
-        var ammoText = (p.ammo < 0) ? '∞' : String(p.ammo);
-        ctx.fillText(w.name + ' ' + ammoText, 48, lineY);
-
-        ctx.fillStyle = 'rgba(255,194,71,0.9)';
-        ctx.fillText('炸弹 ×' + p.bombs, 172, lineY);
-
-        /* 武器背包：每个小方块代表一把已拾取的武器，高亮为当前手持 */
-        for (var wi = 0; wi < p.weapons.length; wi++) {
-          var wep = WEAPONS[p.weapons[wi].id];
-          var bx = 248 + wi * 11;
-          var by = lineY - 9;
-          ctx.fillStyle = wep.color;
-          roundRect(bx, by, 7, 7, 1.5);
-          ctx.fill();
-          if (wi === p.weaponIdx) {
-            ctx.strokeStyle = 'rgba(255,255,255,0.95)';
-            ctx.lineWidth = 1.2;
-            roundRect(bx - 1.5, by - 1.5, 10, 10, 2);
-            ctx.stroke();
-          }
-        }
-
-        /* 超频芯片剩余时间 */
-        if (p.overclock > 0) {
-          ctx.fillStyle = '#37e6ff';
-          ctx.fillText('超频 ' + p.overclock.toFixed(1) + 's', 306, lineY);
-        }
+        ctx.font = '600 12px "Segoe UI","Microsoft YaHei",sans-serif';
+        return 12 + ctx.measureText('倒地 · 等待救援').width + 12;
       }
+      /* 行 1：1P + 得分组 + 24 + 击杀组（+ 超频） */
+      ctx.font = '700 13px "Segoe UI","Microsoft YaHei",sans-serif';
+      var lw = ctx.measureText(p.label).width;
+      ctx.font = '600 11px "Segoe UI","Microsoft YaHei",sans-serif';
+      var wCapS = ctx.measureText('得分').width;
+      var wCapK = ctx.measureText('击杀').width;
+      ctx.font = '800 19px "Segoe UI","Microsoft YaHei",sans-serif';
+      var wScore = ctx.measureText(fmt(p.stats.score)).width;
+      var wKill = ctx.measureText(String(p.stats.kills)).width;
+      var w1 = 12 + lw + 14 + wCapS + 5 + wScore + 24 + wCapK + 5 + wKill;
+      if (p.overclock > 0) {
+        ctx.font = '600 11px "Segoe UI","Microsoft YaHei",sans-serif';
+        w1 += 14 + ctx.measureText('超频 ' + p.overclock.toFixed(1) + 's').width;
+      }
+
+      /* 行 2：炸弹 + 武器弹药 + 16 + 背包方块 */
+      ctx.font = '600 11px "Segoe UI","Microsoft YaHei",sans-serif';
+      var wBomb = ctx.measureText('炸弹 ×' + p.bombs).width;
+      ctx.font = '600 12px "Segoe UI","Microsoft YaHei",sans-serif';
+      var wWep = ctx.measureText(WEAPONS[p.weapon].name + ' ' + ((p.ammo < 0) ? '∞' : String(p.ammo))).width;
+      var wSlot = (p.weapons.length > 0) ? (p.weapons.length * 11 - 4) : 0;
+      var w2 = 12 + wBomb + 14 + wWep + (wSlot > 0 ? 16 + wSlot : 0);
+
+      return Math.max(w1, w2) + 12;
     }
 
+    /* 目标宽度做缓动，返回本帧实际使用的宽度 */
+    function cardWidth(p) {
+      var target = Math.max(CARD_MIN_W, Math.min(320, measureCardWidth(p)));
+      if (p._cardW === undefined) { p._cardW = target; }
+      p._cardW += (target - p._cardW) * 0.22;
+      if (Math.abs(target - p._cardW) < 0.4) { p._cardW = target; }
+      return p._cardW;
+    }
+
+    function drawPlayerCard(p, x, cw) {
+      var top = CARD_BOT - CARD_H;
+      var lineY1 = CARD_BOT - 32;
+      var lineY2 = CARD_BOT - 12;
+
+      /* 玩家贴近 / 站在卡片上时整体淡化，避免文字糊住角色；离开时平滑恢复。
+         屏幕坐标 = 世界坐标 - cam（cam 是视口左上角的世界坐标） */
+      var psx = p.x - cam.x;
+      var psy = p.y - cam.y;
+      var ddx = Math.max(x - psx, 0, psx - (x + cw));
+      var ddy = Math.max(top - psy, 0, psy - CARD_BOT);
+      var dcard = Math.hypot(ddx, ddy);
+      var NEAR = p.r + 44;                        // 进入这个距离开始变淡
+      var cardAlpha = (dcard >= NEAR) ? 1 : (0.22 + 0.78 * (dcard / NEAR));
+
+      /* 超频生效时整张卡的边线改用青色：即使倒计时文字被窄屏挤掉，
+         玩家也能从边线看出「还在生效」 */
+      var accent = (p.overclock > 0) ? '#37e6ff' : p.color;
+
+      ctx.save();
+      ctx.globalAlpha = cardAlpha;
+
+      /* 底板：内容区实心，最后 12px 快速淡出收边。
+         淡出放在文字之后，不会被压在数字底下 */
+      var fadeA = (cw - 12) / cw;
+      var bgGrad = ctx.createLinearGradient(x, 0, x + cw, 0);
+      bgGrad.addColorStop(0, 'rgba(8,16,28,0.68)');
+      bgGrad.addColorStop(Math.max(0, fadeA - 0.05), 'rgba(8,16,28,0.62)');
+      bgGrad.addColorStop(fadeA, 'rgba(8,16,28,0.5)');
+      bgGrad.addColorStop(1, 'rgba(8,16,28,0)');
+      roundRect(x, top, cw, CARD_H, 9);
+      ctx.fillStyle = bgGrad;
+      ctx.fill();
+
+      /* 描边同步渐隐，右端不留一圈孤立的边框 */
+      var lineA = p.alive ? 0.38 : 0.16;
+      var bdGrad = ctx.createLinearGradient(x, 0, x + cw, 0);
+      bdGrad.addColorStop(0, hexA(accent, lineA));
+      bdGrad.addColorStop(Math.max(0, fadeA - 0.2), hexA(accent, lineA * 0.6));
+      bdGrad.addColorStop(1, hexA(accent, 0));
+      ctx.strokeStyle = bdGrad;
+      ctx.lineWidth = 1;
+      roundRect(x + 0.5, top + 0.5, cw - 1, CARD_H - 1, 9);
+      ctx.stroke();
+
+      /* 两行之间的极淡分隔，给左侧信息区一点结构感 */
+      var sepGrad = ctx.createLinearGradient(x, 0, x + cw - 22, 0);
+      sepGrad.addColorStop(0, 'rgba(150,180,210,0.14)');
+      sepGrad.addColorStop(1, 'rgba(150,180,210,0)');
+      ctx.strokeStyle = sepGrad;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x + 10, top + 26.5);
+      ctx.lineTo(x + cw - 22, top + 26.5);
+      ctx.stroke();
+
+      /* 左侧玩家色竖条 */
+      ctx.save();
+      roundRect(x, top, cw, CARD_H, 9);
+      ctx.clip();
+      ctx.globalAlpha = (p.alive ? 0.9 : 0.3) * cardAlpha;
+      ctx.fillStyle = accent;
+      ctx.fillRect(x, top, 3, CARD_H);
+      ctx.restore();
+
+      /* 第一行：玩家标签 + 得分 + 击杀
+         得分与击杀各成「淡色小标签 + 19px 大数值」一组，紧跟排列、
+         不再两端分开；卡片右端余下的位置留给超频倒计时 */
+      var CAP_COL = p.alive ? 'rgba(150,180,210,0.68)' : 'rgba(150,170,190,0.4)';
+      var scoreTxt = fmt(p.stats.score);
+      var killsNum = String(p.stats.kills);
+      var bombTxt = '炸弹 ×' + p.bombs;
+      var ocTxt = '超频 ' + p.overclock.toFixed(1) + 's';
+      var GAP_CAP = 5;
+
+      ctx.textAlign = 'left';
+      ctx.font = '700 13px "Segoe UI","Microsoft YaHei",sans-serif';
+      ctx.fillStyle = p.alive ? p.color : 'rgba(150,170,190,0.5)';
+      ctx.fillText(p.label, x + 12, lineY1);
+      var labelW = ctx.measureText(p.label).width;
+
+      ctx.font = '600 11px "Segoe UI","Microsoft YaHei",sans-serif';
+      var wCapScore = ctx.measureText('得分').width;
+      var wCapKill = ctx.measureText('击杀').width;
+      ctx.font = '800 19px "Segoe UI","Microsoft YaHei",sans-serif';
+      var wScore = ctx.measureText(scoreTxt).width;
+      var wKillNum = ctx.measureText(killsNum).width;
+
+      var sx0 = x + 12 + labelW + 14;                 /* 得分组起点 */
+      var scoreEnd = sx0 + wCapScore + GAP_CAP + wScore;
+      var killW = wCapKill + GAP_CAP + wKillNum;
+      /* 击杀紧跟得分、固定 24px：卡片宽度已由内容决定，不需要再往右拉开 */
+      var killStart = scoreEnd + 24;
+      var killEnd = killStart + killW;
+
+      /* 得分组 */
+      ctx.font = '600 11px "Segoe UI","Microsoft YaHei",sans-serif';
+      ctx.fillStyle = CAP_COL;
+      ctx.fillText('得分', sx0, lineY1 - 1);
+
+      ctx.font = '800 19px "Segoe UI","Microsoft YaHei",sans-serif';
+      ctx.fillStyle = p.alive ? '#eaf6ff' : 'rgba(150,170,190,0.55)';
+      ctx.fillText(scoreTxt, sx0 + wCapScore + GAP_CAP, lineY1);
+
+      /* 击杀组 */
+      ctx.font = '600 11px "Segoe UI","Microsoft YaHei",sans-serif';
+      ctx.fillStyle = CAP_COL;
+      ctx.fillText('击杀', killStart, lineY1 - 1);
+
+      ctx.font = '800 19px "Segoe UI","Microsoft YaHei",sans-serif';
+      ctx.fillStyle = p.alive ? '#ffc247' : 'rgba(255,194,71,0.45)';
+      ctx.fillText(killsNum, killStart + wCapKill + GAP_CAP, lineY1);
+
+      /* 超频：接在击杀组之后；卡片宽度已把这段算进去，不会被裁掉 */
+      if (p.overclock > 0) {
+        ctx.font = '600 11px "Segoe UI","Microsoft YaHei",sans-serif';
+        ctx.fillStyle = p.alive ? '#37e6ff' : 'rgba(55,230,255,0.45)';
+        ctx.fillText(ocTxt, killEnd + 14, lineY1 - 1);
+      }
+
+      ctx.textAlign = 'left';
+
+      /* 第二行：炸弹 → 武器 / 弹药，背包方块右对齐 */
+      if (p.downed) {
+        ctx.font = '600 12px "Segoe UI","Microsoft YaHei",sans-serif';
+        ctx.fillStyle = 'rgba(255,194,71,0.95)';
+        ctx.fillText('倒地 · 等待救援', x + 12, lineY2);
+        ctx.restore();
+        return;
+      }
+
+      /* 炸弹放在最前面，与行 1 的得分/击杀错开层级 */
+      ctx.font = '600 11px "Segoe UI","Microsoft YaHei",sans-serif';
+      ctx.fillStyle = p.alive ? 'rgba(255,194,71,0.9)' : 'rgba(255,194,71,0.4)';
+      ctx.fillText(bombTxt, x + 12, lineY2);
+      var bombW = ctx.measureText(bombTxt).width;
+
+      ctx.font = '600 12px "Segoe UI","Microsoft YaHei",sans-serif';
+      ctx.fillStyle = p.alive ? 'rgba(214,236,255,0.92)' : 'rgba(150,170,190,0.55)';
+      var ammoText = (p.ammo < 0) ? '∞' : String(p.ammo);
+      var wepLabel = WEAPONS[p.weapon].name + ' ' + ammoText;
+      var wepX = x + 12 + bombW + 14;
+      ctx.fillText(wepLabel, wepX, lineY2);
+      var wepEnd = wepX + ctx.measureText(wepLabel).width;
+
+      /* 背包：紧跟武器名 16px；卡片宽度由内容决定，这里只兜底防越界 */
+      var nSlot = p.weapons.length;
+      var slotSpan = (nSlot > 0) ? (nSlot * 11 - 4) : 0;
+      var slotX = Math.min(wepEnd + 16, x + cw - 12 - slotSpan);
+
+      /* 武器背包：每个小方块代表一把已拾取的武器，高亮为当前手持 */
+      for (var wi = 0; wi < nSlot; wi++) {
+        var wep = WEAPONS[p.weapons[wi].id];
+        var bx = slotX + wi * 11;
+        var by = lineY2 - 8;
+        ctx.fillStyle = wep.color;
+        roundRect(bx, by, 7, 7, 1.5);
+        ctx.fill();
+        if (wi === p.weaponIdx) {
+          ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+          ctx.lineWidth = 1.2;
+          roundRect(bx - 1.5, by - 1.5, 10, 10, 2);
+          ctx.stroke();
+        }
+      }
+
+      ctx.restore();
+    }
+
+    var cw1 = 0, cw2 = 0;
+    if (players.length > 1) {
+      cw1 = cardWidth(players[0]);
+      cw2 = cardWidth(players[1]);
+      /* P1 贴左、P2 贴右：宽度变化时向两侧外扩，不会互相挤压 */
+      drawPlayerCard(players[0], CARD_PAD, cw1);
+      drawPlayerCard(players[1], W - CARD_PAD - cw2, cw2);
+    } else if (players.length === 1) {
+      cw1 = cardWidth(players[0]);
+      drawPlayerCard(players[0], CARD_PAD, cw1);
+    }
+
+    /* 底部快捷键提示：居中，与卡片第一行齐平；中间放不下就贴到底部 */
+    var promptTxt = 'P / Esc 暂停　R 结束本局　Q 切枪　E 炸弹';
     ctx.font = '600 11px "Segoe UI","Microsoft YaHei",sans-serif';
+    var promptW = ctx.measureText(promptTxt).width;
+    var leftEnd = CARD_PAD + cw1;
+    var rightStart = (players.length > 1) ? W - CARD_PAD - cw2 : W - CARD_PAD;
+    var promptY = CARD_BOT - 30;
+    if (W / 2 - promptW / 2 < leftEnd + 16 || W / 2 + promptW / 2 > rightStart - 16) {
+      promptY = H - 6;
+    }
+    ctx.textAlign = 'center';
     ctx.fillStyle = 'rgba(150,180,210,0.62)';
-    ctx.fillText('P / Esc 暂停　R 重开　Q 切枪　E 炸弹', 22, H - 18);
+    ctx.fillText(promptTxt, W / 2, promptY);
+    ctx.textAlign = 'left';
 
     ctx.restore();
     drawBossBar();
   }
 
-  /* 左上角实时小地图：世界轮廓 + 障碍 + 宝箱 + 敌人 + 玩家 + 相机视野框 */
+  /* 顶部居中的实时小地图：世界轮廓 + 障碍 + 宝箱 + 敌人 + 玩家 + 相机视野框
+     居中后位于视线正上方，所以底板更淡，且玩家走近时整体淡化，避免糊住角色 */
   function drawMinimap() {
     if (state === 'menu') { return; }
 
     var mw = 156;
     var mh = 88;
-    var mx = 16;
+    var mx = (W - mw) / 2;
     var my = 14;
     var pad = 4;
     var iw = mw - pad * 2;
@@ -6269,13 +6858,30 @@ window.addEventListener('gamepadconnected', function (e) {
     var sx = iw / WW;
     var sy = ih / WH;
 
+    /* 玩家贴近地图范围时淡化（屏幕坐标 = 世界坐标 - cam，与状态卡同一套逻辑） */
+    var NEAR = 46;
+    var mapAlpha = 1;
+    for (var mi = 0; mi < players.length; mi++) {
+      var mp = players[mi];
+      if (!mp.alive) { continue; }
+      var mpsx = mp.x - cam.x;
+      var mpsy = mp.y - cam.y;
+      var mdx = Math.max(mx - mpsx, 0, mpsx - (mx + mw));
+      var mdy = Math.max(my - mpsy, 0, mpsy - (my + mh));
+      var md = Math.hypot(mdx, mdy);
+      var mLim = mp.r + NEAR;
+      var mA = (md >= mLim) ? 1 : (0.18 + 0.82 * (md / mLim));
+      if (mA < mapAlpha) { mapAlpha = mA; }
+    }
+
     ctx.save();
+    ctx.globalAlpha = mapAlpha;
 
     /* 底板 */
     roundRect(mx, my, mw, mh, 8);
-    ctx.fillStyle = 'rgba(10,20,34,0.62)';
+    ctx.fillStyle = 'rgba(10,20,34,0.4)';
     ctx.fill();
-    ctx.strokeStyle = 'rgba(96,164,230,0.32)';
+    ctx.strokeStyle = 'rgba(96,164,230,0.26)';
     ctx.lineWidth = 1;
     ctx.stroke();
 
@@ -6381,7 +6987,8 @@ window.addEventListener('gamepadconnected', function (e) {
     var w = 380;
     var h = 10;
     var x = (W - w) / 2;
-    var y = 58;
+    /* 顶部中间被居中的小地图占据（底边 y=102），血条下移一行让开 */
+    var y = 120;
 
     ctx.save();
     ctx.fillStyle = 'rgba(6,12,22,0.72)';
@@ -6416,6 +7023,10 @@ window.addEventListener('gamepadconnected', function (e) {
     ctx.textBaseline = 'middle';
     /* 有“获得武器”提示时横幅整体上移，避免两块文字压在一起 */
     var baseY = toast ? H * 0.19 : H * 0.26;
+    /* Boss 波次时血条占住 y=120~130，横幅下移到血条下方，避免叠字 */
+    for (var bi = 0; bi < enemies.length; bi++) {
+      if (enemies[bi].boss) { baseY = Math.max(baseY, 168); break; }
+    }
 
     ctx.font = '800 ' + banner.size + 'px "Segoe UI","Microsoft YaHei",sans-serif';
     ctx.shadowColor = 'rgba(55,230,255,0.55)';
@@ -6616,6 +7227,7 @@ window.addEventListener('gamepadconnected', function (e) {
   var resCombo = document.getElementById('resCombo');
   var scRank = document.getElementById('scRank');
   var btnSaveCard = document.getElementById('btnSaveCard');
+  var btnContinue = document.getElementById('btnContinue');
   var resBest = document.getElementById('resBest');
   var resNewBest = document.getElementById('resNewBest');
 
@@ -6786,13 +7398,22 @@ window.addEventListener('gamepadconnected', function (e) {
     this.blur();
   });
 
-  document.getElementById('btnRestartPause').addEventListener('click', function () {
-    startGame(mode);
+  document.getElementById('btnEndRun').addEventListener('click', function () {
+    /* 暂停中唯一的中途退出入口：先出结算卡，卡上再选「再来一局」或「返回开始页」。
+       这样每一次弃局都会留档，也不会出现两个按钮指向同一个地方；
+       误点了还能在结算卡上点「继续本局」退回去 */
+    endGame(true);
     this.blur();
   });
 
-  document.getElementById('btnQuit').addEventListener('click', function () {
-    toMenu();
+  document.getElementById('btnContinue').addEventListener('click', function () {
+    /* 中途结算的退路：回到结算前的那一局（整备阶段则恢复选卡面板） */
+    if (!settleMid) { return; }
+    hideEl(resultEl);
+    state = settleBack;
+    if (state === 'intermission') { showEl(upgradeEl); }
+    settleMid = false;
+    updateTools();
     this.blur();
   });
 
@@ -6805,6 +7426,33 @@ window.addEventListener('gamepadconnected', function (e) {
     toMenu();
     this.blur();
   });
+
+  /* 调试入口：只有带 ?debug 打开时才挂到 window，正常游玩不受影响。
+     用途：直接跳到指定波次、重掷地形序列、读取当前地形，便于验证随机关卡。 */
+  if (location.search.indexOf('debug') >= 0) {
+    window.__bqs = {
+      startWave: function (n) { startWave(n); },
+      terrainForWave: terrainForWave,
+      current: function () {
+        return {
+          state: state,
+          wave: wave,
+          terrain: currentTerrain ? currentTerrain.name : '',
+          obstacles: obstacles.length,
+          chests: chests.length,
+          mounts: mounts.length
+        };
+      },
+      reroll: function () {
+        runSeed = Math.floor(Math.random() * 2147483647) + 1;
+        /* 调试时无视难度强制洗一次，方便在休闲/标准下也能看随机关卡 */
+        var bak = difficulty;
+        difficulty = 'hard';
+        shuffleTerrainPlan();
+        difficulty = bak;
+      }
+    };
+  }
 
   /* 首帧之前把相机对准出生点，避免开局画面从 (0,0) 滑过去 */
   updateCamera(1);
