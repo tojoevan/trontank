@@ -1311,7 +1311,11 @@ window.addEventListener('gamepadconnected', function (e) {
     hidInvertY: true,
     /* 地形：每局洗牌，波次顺序不再固定。关掉则退回「固定顺序轮换」的旧行为。
        开启后，固定关卡与程序化生成关卡混在同一条随机序列里，一轮走完才重复。 */
-    terrainShuffle: true
+    terrainShuffle: true,
+    /* 异形场地的可活动面积 = 原矩形战场（WW×WH）× 该倍数。
+       1.0 = 与改造前的方正地图面积持平，不会再「随机一换就变小」；
+       默认 1.12 略大于原地图，保证异形 + 凸包削角之后手感依然开阔 */
+    arenaFill: 1.12
   };
 
   /* ----------------------------------------------------------
@@ -2138,44 +2142,103 @@ window.addEventListener('gamepadconnected', function (e) {
     return s;
   }
 
+  /* 顶点集合的包围盒 */
+  function arenaBoundsOf(pts) {
+    var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (var i = 0; i < pts.length; i++) {
+      if (pts[i].x < minX) { minX = pts[i].x; }
+      if (pts[i].x > maxX) { maxX = pts[i].x; }
+      if (pts[i].y < minY) { minY = pts[i].y; }
+      if (pts[i].y > maxY) { maxY = pts[i].y; }
+    }
+    return { minX: minX, minY: minY, maxX: maxX, maxY: maxY, w: maxX - minX, h: maxY - minY };
+  }
+
+  /* 候选点所在的椭圆包络相对世界半径的放大倍数。
+     它只决定「轮廓有多鼓」，真正的可活动面积由下面的面积归一化兜底 */
+  var ARENA_GROW = 1.20;
+
   function buildArena(seed) {
     arenaSeed = seed;
     var rng = mulberry32(seed);
     var cx = WW / 2, cy = WH / 2;
+    var rx = WW * 0.5 * ARENA_GROW;
+    var ry = WH * 0.5 * ARENA_GROW;
     var n = 9 + Math.floor(rng() * 4);              // 9~12 个候选点
     var lobes = 2 + Math.floor(rng() * 2);          // 低频起伏圈数（2~3）
     var phase = rng() * TAU;
     var pts = [];
-    for (var i = 0; i < n; i++) {
+    var i;
+    for (i = 0; i < n; i++) {
       var a = (i / n) * TAU + (rng() - 0.5) * (TAU / n) * 0.45;
-      /* 半径系数 0.56~1.00：一边明显收进来、另一边贴到近世界边缘，轮廓就不对称了 */
-      var k = 0.78 + 0.22 * Math.cos(a * lobes + phase) + (rng() - 0.5) * 0.14;
-      k = clamp(k, 0.56, 1.0);
-      pts.push({
-        x: cx + Math.cos(a) * WW * 0.47 * k,
-        y: cy + Math.sin(a) * WH * 0.47 * k
-      });
+      /* 半径系数 0.70~1.06：一边收进来、另一边鼓出去，轮廓就不对称了 */
+      var k = 0.86 + 0.20 * Math.cos(a * lobes + phase) + (rng() - 0.5) * 0.10;
+      k = clamp(k, 0.70, 1.06);
+      pts.push({ x: cx + Math.cos(a) * rx * k, y: cy + Math.sin(a) * ry * k });
     }
     var hull = convexHull(pts);
     /* 凸包退化（点几乎共线）时退回椭圆，保证一定有个能用的场地 */
     if (hull.length < 5) {
       hull = [];
-      for (var e = 0; e < 12; e++) {
-        var ea = (e / 12) * TAU;
-        hull.push({ x: cx + Math.cos(ea) * WW * 0.42, y: cy + Math.sin(ea) * WH * 0.42 });
+      for (i = 0; i < 12; i++) {
+        var ea = (i / 12) * TAU;
+        hull.push({ x: cx + Math.cos(ea) * rx * 0.9, y: cy + Math.sin(ea) * ry * 0.9 });
       }
     }
     if (arenaAreaSign(hull) < 0) { hull.reverse(); }
 
-    arenaPts = hull;
-    var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (var j = 0; j < hull.length; j++) {
-      if (hull[j].x < minX) { minX = hull[j].x; }
-      if (hull[j].x > maxX) { maxX = hull[j].x; }
-      if (hull[j].y < minY) { minY = hull[j].y; }
-      if (hull[j].y > maxY) { maxY = hull[j].y; }
+    /* 面积归一：绕世界中心等比放大，直到多边形面积 = 原矩形战场面积 × CFG.arenaFill。
+       「不规则」只该改变轮廓形状，不该把可活动面积吃掉——否则异形地图天然比方正地图小一圈 */
+    var target = WW * WH * (CFG.arenaFill || 1);
+    var area = Math.abs(arenaAreaSign(hull)) / 2;
+    if (area > 1) {
+      var sc = Math.sqrt(target / area);
+      for (i = 0; i < hull.length; i++) {
+        hull[i].x = cx + (hull[i].x - cx) * sc;
+        hull[i].y = cy + (hull[i].y - cy) * sc;
+      }
     }
-    arenaBB = { minX: minX, minY: minY, maxX: maxX, maxY: maxY, w: maxX - minX, h: maxY - minY };
+
+    /* 单轴下限：随机形状可能「横向鼓、纵向瘪」，高度还不如原来的矩形，
+       纵向跑动会显得局促。这种时候对该轴单独拉伸到至少 1.0 倍世界尺寸——
+       拉伸只会让面积更大，不会把地图改小 */
+    var bb = arenaBoundsOf(hull);
+    var stretchX = Math.max(1, WW / Math.max(1, bb.w));
+    var stretchY = Math.max(1, WH / Math.max(1, bb.h));
+    if (stretchX > 1.001 || stretchY > 1.001) {
+      for (i = 0; i < hull.length; i++) {
+        hull[i].x = cx + (hull[i].x - cx) * stretchX;
+        hull[i].y = cy + (hull[i].y - cy) * stretchY;
+      }
+      bb = arenaBoundsOf(hull);
+    }
+
+    /* 缩放后的形状可能整体偏一侧，再把包围盒挪回世界中心：
+       出生点、相机默认目标都在世界中心，偏了会出现「出生就在地图边缘」 */
+    var ox = cx - (bb.minX + bb.maxX) / 2, oy = cy - (bb.minY + bb.maxY) / 2;
+    for (i = 0; i < hull.length; i++) {
+      hull[i].x += ox;
+      hull[i].y += oy;
+    }
+
+    arenaPts = hull;
+    arenaBB = {
+      minX: bb.minX + ox, minY: bb.minY + oy,
+      maxX: bb.maxX + ox, maxY: bb.maxY + oy,
+      w: bb.w, h: bb.h
+    };
+  }
+
+  /* 场地包围盒（可按 pad 内缩）；场地还没生成时退回世界矩形 */
+  function arenaBox(pad) {
+    var p = pad || 0;
+    if (arenaBB && arenaBB.w > 0) {
+      return {
+        minX: arenaBB.minX + p, minY: arenaBB.minY + p,
+        maxX: arenaBB.maxX - p, maxY: arenaBB.maxY - p
+      };
+    }
+    return { minX: p, minY: p, maxX: WW - p, maxY: WH - p };
   }
 
   /* 点到最近边界的内距（正=场内，0=线上，负=场外）。
@@ -2342,18 +2405,24 @@ window.addEventListener('gamepadconnected', function (e) {
     buildArena((t.seed || 1) + 17);
 
     obstacles = [];
-    /* 地形坐标是按 BASE_WW×BASE_WH 硬编码的，世界随视口变化后必须同比缩放，
-       否则布局会挤到一角或跑出边界。圆半径用 kx/ky 的较小值，避免被拉成椭圆。 */
-    var kx = WW / BASE_WW;
-    var ky = WH / BASE_WH;
+    /* 地形坐标是按 BASE_WW×BASE_WH 硬编码的，这里按「场地包围盒」同比缩放 + 平移：
+       异形场地可能比世界矩形更大，仍按 WW×WH 铺会把沿边一圈铺成空地。
+       圆半径用 kx/ky 的较小值，避免被拉成椭圆。 */
+    var hasBB = !!(arenaBB && arenaBB.w > 0 && arenaBB.h > 0);
+    var layW = hasBB ? arenaBB.w : WW;
+    var layH = hasBB ? arenaBB.h : WH;
+    var offX = hasBB ? arenaBB.minX : 0;
+    var offY = hasBB ? arenaBB.minY : 0;
+    var kx = layW / BASE_WW;
+    var ky = layH / BASE_WH;
     var kr = Math.min(kx, ky);
     var list = t.obstacles;
     for (var i = 0; i < list.length; i++) {
       var src = list[i];
       var ob = {
         type: src.type,
-        x: src.x * kx,
-        y: src.y * ky,
+        x: offX + src.x * kx,
+        y: offY + src.y * ky,
         w: (src.w || 0) * kx,
         h: (src.h || 0) * ky,
         r: (src.r || 0) * kr,
@@ -2374,7 +2443,7 @@ window.addEventListener('gamepadconnected', function (e) {
     var ms = t.mounts || [];
     for (var k = 0; k < ms.length; k++) {
       var w = WEAPONS[ms[k].weapon];
-      var mpt = { x: ms[k].x * kx, y: ms[k].y * ky };
+      var mpt = { x: offX + ms[k].x * kx, y: offY + ms[k].y * ky };
       confineToArena(mpt, 26);
       mounts.push({
         x: mpt.x,
@@ -2390,7 +2459,7 @@ window.addEventListener('gamepadconnected', function (e) {
     chests = [];
     var cs = t.chests || [];
     for (var ci = 0; ci < cs.length; ci++) {
-      var cpt = { x: cs[ci].x * kx, y: cs[ci].y * ky };
+      var cpt = { x: offX + cs[ci].x * kx, y: offY + cs[ci].y * ky };
       confineToArena(cpt, 26);
       chests.push({
         x: cpt.x,
@@ -3448,8 +3517,10 @@ window.addEventListener('gamepadconnected', function (e) {
     else if (side === 2) { pos = { x: rand(l + 140, r - 120), y: b + p }; }
     else { pos = { x: l - p, y: rand(t + 120, b - 80) }; }
 
-    pos.x = clamp(pos.x, 30, WW - 30);
-    pos.y = clamp(pos.y, 30, WH - 30);
+    /* 场地比世界矩形大时，按世界矩形夹会把刷新点甩到视野里，故用场地包围盒夹 */
+    var eb = arenaBox(30);
+    pos.x = clamp(pos.x, eb.minX, eb.maxX);
+    pos.y = clamp(pos.y, eb.minY, eb.maxY);
     /* 异形场地：落在轮廓外的刷新点改成场内随机点，否则敌人会从虚空里走进来 */
     if (arenaDist(pos.x, pos.y) < 34) { return arenaSpawnFallback(58); }
     return pos;
@@ -3484,8 +3555,9 @@ window.addEventListener('gamepadconnected', function (e) {
     else if (side === 2) { pos = { x: (l + r) / 2 + rand(-120, 120), y: b + pad }; }
     else { pos = { x: l - pad, y: (t + b) / 2 + rand(-90, 90) }; }
 
-    pos.x = clamp(pos.x, 70, WW - 70);
-    pos.y = clamp(pos.y, 70, WH - 70);
+    var eb2 = arenaBox(70);
+    pos.x = clamp(pos.x, eb2.minX, eb2.maxX);
+    pos.y = clamp(pos.y, eb2.minY, eb2.maxY);
     if (arenaDist(pos.x, pos.y) < 80) { return arenaSpawnFallback(100); }
     return pos;
   }
@@ -7105,8 +7177,15 @@ window.addEventListener('gamepadconnected', function (e) {
     var pad = 4;
     var iw = mw - pad * 2;
     var ih = mh - pad * 2;
-    var sx = iw / WW;
-    var sy = ih / WH;
+    /* 映射基准用「场地包围盒」而不是世界矩形：异形场地可能伸到世界矩形之外，
+       按 WW/WH 映射会把外圈裁掉、玩家点跑到小地图框外。
+       两个方向用同一比例（居中留边），否则狭长的场地在小地图上会被拉变形 */
+    var mBox = arenaBox(0);
+    var mW = Math.max(1, mBox.maxX - mBox.minX);
+    var mH = Math.max(1, mBox.maxY - mBox.minY);
+    var ms = Math.min(iw / mW, ih / mH);
+    var sx = ms;
+    var sy = ms;
 
     /* 玩家贴近地图范围时淡化（屏幕坐标 = 世界坐标 - cam，与状态卡同一套逻辑） */
     var NEAR = 46;
@@ -7139,8 +7218,8 @@ window.addEventListener('gamepadconnected', function (e) {
     roundRect(mx + pad, my + pad, iw, ih, 5);
     ctx.clip();
 
-    var ox = mx + pad;
-    var oy = my + pad;
+    var ox = mx + pad + (iw - mW * ms) / 2 - mBox.minX * ms;
+    var oy = my + pad + (ih - mH * ms) / 2 - mBox.minY * ms;
     var i;
 
     /* 异形场地轮廓：让小地图一眼看出本关不是矩形 */
@@ -7719,7 +7798,11 @@ window.addEventListener('gamepadconnected', function (e) {
           chests: chests.length,
           mounts: mounts.length,
           arenaSides: arenaPts.length,
+          world: { w: WW, h: WH },
           arenaBB: { w: Math.round(arenaBB.w), h: Math.round(arenaBB.h) },
+          /* 场地面积 / 原矩形战场面积：<1 说明异形地图比方正地图小 */
+          arenaArea: Math.round(Math.abs(arenaAreaSign(arenaPts)) / 2),
+          arenaFill: +(Math.abs(arenaAreaSign(arenaPts)) / 2 / (WW * WH)).toFixed(3),
           /* 每个玩家到场地边缘的内距（负值=已经出界） */
           playerInset: players.map(function (p) { return Math.round(arenaDist(p.x, p.y)); }),
           enemyOut: enemies.filter(function (e) { return arenaDist(e.x, e.y) < -1; }).length,
