@@ -7877,6 +7877,12 @@ window.addEventListener('gamepadconnected', function (e) {
           /* 在飞的子弹数：验证「开火链路是否通」比看击杀更直接，不会被敌人距离干扰 */
           bullets: bullets.length,
           enemyAlive: enemies.filter(function (e) { return e.alive !== false; }).length,
+          /* 敌人坐标：验证脚本必须能「朝敌人转向」才打得中。
+             只靠方向键绕圈，敌人从背后追来，子弹永远朝前打空 */
+          enemies: enemies.filter(function (e) { return e.alive !== false; })
+            .map(function (e) {
+              return { x: Math.round(e.x), y: Math.round(e.y), hp: Math.round(e.hp), type: e.type };
+            }),
           /* 本波计划出怪数 / 还没出场的数量：用来核对「出怪节奏与地图大小是否匹配」 */
           spawnPlanned: spawnPlanned,
           spawnLeft: spawnList.length,

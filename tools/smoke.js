@@ -11,39 +11,64 @@
    ========================================================== */
 const { launch, openGame, run, sleep, BASE_URL } = require('./lib');
 
-/* 绕圈走 + 持续开火。站着不动朝向不会变，打不到人，所以必须一边走一边打。
-   每段按住 900ms 而不是几百毫秒——太短只是原地抖动，扫不到地图上的敌人。 */
-async function circleFire(page, dirs, fireKey, ms) {
-  await page.keyboard.down(fireKey);
-  const step = 900;
-  const loops = Math.max(1, Math.round(ms / step));
+const PAD = [
+  { up: 'KeyW', down: 'KeyS', left: 'KeyA', right: 'KeyD' },
+  { up: 'ArrowUp', down: 'ArrowDown', left: 'ArrowLeft', right: 'ArrowRight' }
+];
+
+/* 朝最近的敌人转向并开火。
+   为什么要这么做：人物朝向跟随移动方向，敌人是追着玩家跑的，
+   原地绕圈时敌人全在背后，子弹只会朝前打空——跑 24 秒也是 0 击杀，
+   这种「失败」测的是运气不是回归。转向瞄准才能稳定命中。 */
+async function aimFire(page, idx, fireKey, maxMs, stop) {
+  const deadline = Date.now() + (maxMs || 24000);
+  const pad = PAD[idx];
   let peakBullets = 0;
   let last = null;
-  for (let i = 0; i < loops; i++) {
-    const k = dirs[i % dirs.length];
-    await page.keyboard.down(k);
-    await sleep(step);
-    await page.keyboard.up(k);
+
+  await page.keyboard.down(fireKey);
+  while (Date.now() < deadline) {
     last = await page.evaluate(() => window.__bqs.current());
     if (last.bullets > peakBullets) { peakBullets = last.bullets; }
+    if (last.players[idx].kills > 0) { break; }
+    if (stop && stop(last)) { break; }
+
+    const me = last.players[idx];
+    const list = last.enemies || [];
+    if (!list.length) { await sleep(250); continue; }
+
+    /* 取最近的敌人，按主轴（横/纵哪边偏得多）按方向键：朝向随即改变 */
+    let best = null;
+    let bestD = Infinity;
+    for (const e of list) {
+      const d = (e.x - me.x) * (e.x - me.x) + (e.y - me.y) * (e.y - me.y);
+      if (d < bestD) { bestD = d; best = e; }
+    }
+    const dx = best.x - me.x;
+    const dy = best.y - me.y;
+    const k = Math.abs(dx) >= Math.abs(dy)
+      ? (dx > 0 ? pad.right : pad.left)
+      : (dy > 0 ? pad.down : pad.up);
+
+    await page.keyboard.down(k);
+    await sleep(300);
+    await page.keyboard.up(k);
   }
   await page.keyboard.up(fireKey);
   return { peakBullets, last };
 }
 
-/* 打到出结果为止：敌人分布是随机的，固定时长会时中时不中，
-   固定时长跑出来的「失败」是运气不是回归。这里最多跑 maxMs，达标立刻停。 */
-async function fireUntil(page, dirs, fireKey, done, maxMs) {
-  const deadline = Date.now() + (maxMs || 24000);
-  let peakBullets = 0;
-  let last = null;
-  while (Date.now() < deadline) {
-    const r = await circleFire(page, dirs, fireKey, 5000);
-    if (r.peakBullets > peakBullets) { peakBullets = r.peakBullets; }
-    last = r.last;
-    if (done(last)) { break; }
-  }
-  return { peakBullets, last };
+/* 双人单方面开火：只有 idx 这位在打，另一位站着不动当活靶子。
+   站桩的队友会被敌人围殴——一旦倒地甚至整局结算，
+   后续断言就等于在结算界面上做，结论全部无意义。所以这里同时
+   返回局面是否仍然有效，由调用方决定重开。 */
+async function duoFirePhase(page, fireKey, idx, maxMs) {
+  const r = await aimFire(page, idx, fireKey, maxMs,
+    c => c.state !== 'playing' || c.players[1 - idx].downed);
+  /* 停火后子弹仍在飞，落地补刀仍算本人的击杀，等结算完再取基线 */
+  await sleep(1600);
+  const c = await page.evaluate(() => window.__bqs.current());
+  return { peakBullets: r.peakBullets, c };
 }
 
 run('smoke 主流程（单人 + 双人）', async (t) => {
@@ -67,8 +92,7 @@ run('smoke 主流程（单人 + 双人）', async (t) => {
 
     /* 开火 → 击杀。15 秒足够清掉第 1 波的 4 个敌人；
        同时用「在飞子弹数」验证开火链路本身，即使运气差没打中也不误判 */
-    const fire = await fireUntil(page, ['KeyD', 'KeyS', 'KeyA', 'KeyW'], 'KeyJ',
-      c => c.players[0].kills > 0, 24000);
+    const fire = await aimFire(page, 0, 'KeyJ', 24000);
     let s = fire.last;
     t.check('单人 · 开火产生子弹', fire.peakBullets > 0, '峰值 ' + fire.peakBullets + ' 发在飞');
     t.check('单人 · 开火能击杀', s.players[0].kills > 0, '击杀=' + s.players[0].kills + ' 剩余敌人=' + s.enemyAlive);
@@ -119,29 +143,46 @@ run('smoke 主流程（单人 + 双人）', async (t) => {
     t.check('双人 · P2 能独立移动', p2dx < -4, 'Δx=' + p2dx);
     t.check('双人 · 两人互不干扰', p1dx > 0 && p2dx < 0, 'P1 +' + p1dx + ' / P2 ' + p2dx);
 
-    /* 战绩归属：只让 P1 开火，P2 的击杀必须保持 0 */
-    const f1 = await fireUntil(page, ['KeyD', 'KeyS', 'KeyA', 'KeyW'], 'KeyJ',
-      c => c.players[0].kills > 0, 24000);
-    /* 停火后还要等一会：最后一轮打出的子弹仍在飞，落地补刀仍算 P1 的击杀，
-       不等就取基线会把「残留子弹结算」误判成「P2 抢了 P1 的击杀」 */
-    await sleep(1600);
-    const only1 = await page.evaluate(() => window.__bqs.current());
-    t.check('双人 · P1 开火有击杀', only1.players[0].kills > 0, 'P1 击杀=' + only1.players[0].kills);
-    t.eq('双人 · P1 开火时 P2 击杀为 0', only1.players[1].kills, 0);
-    t.eq('双人 · P1 开火时 P2 得分为 0', only1.players[1].score, 0);
+    /* 战绩归属：只让 P1 开火，P2 的击杀必须保持 0；
+       再换 P2 开火，P2 也要能打。
+       两段都是「一个人打、一个人站桩」，站桩那位会被围殴倒地，
+       一旦如此局面就作废（后面等于在结算界面上做断言），整段重开。 */
+    let only1 = null;
+    let only2 = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      if (attempt > 1) { await openGame(page, 'duo'); }
 
-    /* 换 P2 开火，P2 也要能打 */
-    const f2 = await fireUntil(page, ['ArrowLeft', 'ArrowDown', 'ArrowRight', 'ArrowUp'], 'ShiftRight',
-      c => c.players[1].kills > 0, 24000);
-    await sleep(1600);
-    const only2 = await page.evaluate(() => window.__bqs.current());
-    t.check('双人 · P2 开火有击杀', only2.players[1].kills > 0, 'P2 击杀=' + only2.players[1].kills);
-    t.check('双人 · P2 得分独立累计', only2.players[1].score > 0, 'P2 得分=' + only2.players[1].score);
-    t.check('双人 · P1 战绩未被 P2 影响', only2.players[0].kills === only1.players[0].kills,
+      const a = await duoFirePhase(page, 'KeyJ', 0, 24000);
+      if (a.c.state !== 'playing' || a.c.players[0].downed || a.c.players[1].downed) {
+        t.info('第 ' + attempt + ' 局作废：P1 阶段局面已结束（队友被打倒或提前结算），重开');
+        continue;
+      }
+      only1 = a.c;
+
+      const b = await duoFirePhase(page, 'ShiftRight', 1, 24000);
+      if (b.c.state !== 'playing' || b.c.players[1].downed) {
+        t.info('第 ' + attempt + ' 局作废：P2 阶段局面已结束（被打倒或提前结算），重开');
+        continue;
+      }
+      only2 = b.c;
+      break;
+    }
+
+    if (!only2) {
+      t.fail('双人 · 三局都没拿到有效对局',
+        '站桩的那一方连续被打倒，无法验证战绩归属；请检查敌人强度或救援参数');
+    } else {
+      t.check('双人 · P1 开火有击杀', only1.players[0].kills > 0, 'P1 击杀=' + only1.players[0].kills);
+      t.eq('双人 · P1 开火时 P2 击杀为 0', only1.players[1].kills, 0);
+      t.eq('双人 · P1 开火时 P2 得分为 0', only1.players[1].score, 0);
+      t.check('双人 · P2 开火有击杀', only2.players[1].kills > 0, 'P2 击杀=' + only2.players[1].kills);
+      t.check('双人 · P2 得分独立累计', only2.players[1].score > 0, 'P2 得分=' + only2.players[1].score);
+      t.check('双人 · P1 战绩未被 P2 影响', only2.players[0].kills === only1.players[0].kills,
       only1.players[0].kills + ' → ' + only2.players[0].kills);
 
-    t.eq('双人 · 敌人不出界', only2.enemyOut, 0);
-    t.check('双人 · 两人都在场内', only2.playerInset.every(v => v > 0), JSON.stringify(only2.playerInset));
+      t.eq('双人 · 敌人不出界', only2.enemyOut, 0);
+      t.check('双人 · 两人都在场内', only2.playerInset.every(v => v > 0), JSON.stringify(only2.playerInset));
+    }
 
     /* ---------------- 控制台 ---------------- */
     t.check('控制台无报错', errors.length === 0, errors.slice(0, 2).join(' | '));
