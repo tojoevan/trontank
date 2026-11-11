@@ -258,3 +258,50 @@ trontank/
 - `init`：复刻原版单文件游戏。
 - `feat: 拾取范围变量化 + 磁吸`：新增磁吸机制，`CFG.pickupRadius/pickupAttractR/pickupAttractSpeed` 控制拾取手感。
 - （更早）新增 WebHID 手柄直连、P1/P2 手柄分配配置。
+- `5074503` / **v0.1.0**：P1/P2 个人战绩统计；连接手柄移入按键设置；操作说明精简；按键面板去掉垂直滚动条。
+- `135b924` / **v0.2.0**：HUD 状态卡重构（自适应宽度、炸弹前置、数值放大、右端渐隐）；小地图居中、公共信息回左上、靠近玩家淡化；暂停面板合并为「结束本局」、ESC 中途也出分享卡；地形池 10 种 + 长墙碎成锯齿错台；异形凸多边形战场 + 面积归一 1.12×；仅挑战难度随机地形顺序与布局。
+
+## 10. 部署
+
+线上：**<https://tron.zhaoyouhan.com>**
+
+| 项 | 值 |
+|---|---|
+| 服务器 | `67.215.237.94`（RackNerd / 宝塔，root 免密直连） |
+| 目录 | `/www/wwwroot/tron.zhaoyouhan.com/` |
+| 站点配置 | `/www/server/panel/vhost/nginx/html_tron.zhaoyouhan.com.conf` |
+| CDN | Cloudflare 前置 |
+| 服务器时区 | **UTC**（比北京时间慢 8 小时，看 `ls -l` 别被时间戳误导） |
+
+部署标准流程：
+
+```bash
+# 1) 本地校验内联脚本语法（单文件项目没有构建步骤，这是唯一的静态检查）
+node -e "const fs=require('fs');const h=fs.readFileSync('index.html','utf8');
+const re=/<script(?![^>]*src=)[^>]*>([\s\S]*?)<\/script>/g;let m,n=0;
+while((m=re.exec(h))){n++;new Function(m[1]);}console.log('语法 OK',n);"
+
+# 2) 先在服务器上备份当前线上文件（命名带版本，便于回滚）
+ssh root@67.215.237.94 'cd /www/wwwroot/tron.zhaoyouhan.com && \
+  cp -p index.html index.html.pre-vXXX.$(date +%Y%m%d%H%M%S)'
+
+# 3) 上传
+scp index.html root@67.215.237.94:/www/wwwroot/tron.zhaoyouhan.com/index.html
+ssh root@67.215.237.94 'chmod 644 /www/wwwroot/tron.zhaoyouhan.com/index.html'
+
+# 4) 校验：只比对【服务器上的文件】md5，不要比对 Cloudflare 返回的内容
+md5 -q index.html                                            # 本地
+ssh root@67.215.237.94 'md5sum /www/wwwroot/tron.zhaoyouhan.com/index.html'  # 两者必须一致
+```
+
+### ⚠️ 三个必须知道的坑
+
+1. **不能拿线上 md5 和本地比。** Cloudflare 对 HTML 做了两处固定注入：`<body>` 后插入一个隐藏的 `<a href="/cdn-cgi/content?id=...">`（邮箱混淆），`</body>` 前插入 `window.__CF$cv$params` 脚本（机器人检测）。**线上返回体恒比服务器文件大 1417 字节**。判断是否部署成功，要么用服务器文件 md5，要么数新版专属标记（如 `grep -c arenaPts`）。
+2. **不需要 purge 缓存**，但别假设它一定如此。响应头 `cf-cache-status: DYNAMIC` 表示 HTML 未被 CDN 缓存、每次回源。如果哪天规则变了变成 `HIT`，就要 purge。验证时永远看 `cf-cache-status` 而不是猜。
+3. **部署后用真实浏览器跑一遍**，别只 curl。至少确认：页面能进、`?debug` 下 `window.__bqs.current()` 返回 `state: 'playing'`、`arenaFill` ≈ 1.12、`enemyOut` 为 0、控制台无报错。
+
+### 回滚
+
+- 快：服务器上 `cp -p index.html.pre-vXXX.<时间戳> index.html` 即可，10 秒完成。
+- 稳：`git show <tag>:index.html > index.html` 重新上传。已知锚点 `v0.1.0`（5074503）、`v0.2.0`（135b924）。
+- 注意：服务器目录里堆着 2026-11-01 那批 `index.html.bak.*` 手工备份，是旧迭代留下的，别当成新备份用。
