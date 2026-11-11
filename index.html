@@ -7867,9 +7867,12 @@ window.addEventListener('gamepadconnected', function (e) {
               id: p.id,
               x: Math.round(p.x), y: Math.round(p.y),
               alive: p.alive, downed: !!p.downed, hp: Math.round(p.hp),
+              maxHp: Math.round(p.maxHp),
               score: p.stats.score, kills: p.stats.kills,
               weapon: p.weapon, ammo: p.ammo,
-              weaponCount: p.weapons ? p.weapons.length : 0
+              weaponCount: p.weapons ? p.weapons.length : 0,
+              /* 救援进度（秒）：验证「靠近会累计、离开会回退」靠这个，看不到就无从判断 */
+              rescueT: +(p.rescueT || 0).toFixed(2)
             };
           }),
           terrain: currentTerrain ? currentTerrain.name : '',
@@ -7903,6 +7906,8 @@ window.addEventListener('gamepadconnected', function (e) {
             return false;
           }).length,
           mounts: mounts.length,
+          /* 背靠背护盾是否生效：减伤 25% 是纯计算量，看不到就只能靠肉眼猜 */
+          duoShield: !!duoShield,
           arenaSides: arenaPts.length,
           world: { w: WW, h: WH },
           arenaBB: { w: Math.round(arenaBB.w), h: Math.round(arenaBB.h) },
@@ -7923,6 +7928,15 @@ window.addEventListener('gamepadconnected', function (e) {
         difficulty = 'hard';
         shuffleTerrainPlan();
         difficulty = bak;
+      },
+      /* 伤害注入：双人连携（倒地→救援、背靠背护盾）靠「站着挨打」根本构造不出
+         稳定的局面——多半两人一起倒直接结算。这里给用例一个可控入口，
+         走的是真实的 hurtPlayer，因此护盾减伤等逻辑照常生效。 */
+      hurt: function (idx, dmg) {
+        var p = players[idx];
+        if (!p) { return false; }
+        hurtPlayer(p, dmg || 9999);
+        return true;
       }
     };
   }

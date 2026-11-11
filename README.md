@@ -278,6 +278,7 @@ trontank/
 │   ├── lib.js       #   公共库：浏览器探测、页面启动、断言汇报
 │   ├── lint.js      #   静态检查（语法 / 骨架 / 关键函数 / 调试接口隔离）
 │   ├── smoke.js     #   主流程：单人 + 双人（含战绩归属）
+│   ├── duo-rescue.js#   双人连携：倒地救援 + 背靠背护盾
 │   ├── arena-edge.js#   异形边界压力
 │   ├── order.js     #   地形顺序与确定性
 │   ├── density.js   #   密度守恒（数量 vs 场地面积）
@@ -297,6 +298,7 @@ trontank/
 - `ffbde85`：回归验证入库（`tools/`，含双人玩法覆盖）；调试接口补 `players[]`/`bullets`/`enemyAlive`。
 - （本批）密度守恒：出怪数与宝箱按 `√(场地面积比)` 缩放，`CFG.arenaFill` 不再是隐藏难度旋钮；调试接口补 `enemyOnScreen`/`spawnPlanned`/`spawnLeft`/`chestBad`；新增 `tools/density.js`。
 - `21c685f` / **v0.2.1**：冒烟改成朝最近敌人转向再开火（`aimFire`），双人「站桩队友被打倒」时自动重开（最多 3 局）；调试接口补 `enemies[]`（仅 `?debug`）；删除不可靠的 `circleFire`/`fireUntil`。
+- （本批）双人连携入库：新增 `tools/duo-rescue.js`（救援 + 护盾 20 项）；调试接口补 `duoShield`/`maxHp`/`rescueT` 与伤害注入 `hurt(idx, dmg)`——连携状态靠挨打构造不出来，只能注入。
 
 ## 10. 部署
 
@@ -348,7 +350,7 @@ ssh root@67.215.237.94 'md5sum /www/wwwroot/tron.zhaoyouhan.com/index.html'  # �
 单文件项目没有构建步骤，`lint` 承担了「编译」的角色，Playwright 用例承担了「集成测试」的角色。
 
 ```bash
-./tools/verify.sh          # 全量（约 90 秒，78 项断言）
+./tools/verify.sh          # 全量（约 90 秒，98 项断言）
 ./tools/verify.sh --fast   # 只跑 lint + 冒烟（改小东西时用）
 ```
 
@@ -356,6 +358,7 @@ ssh root@67.215.237.94 'md5sum /www/wwwroot/tron.zhaoyouhan.com/index.html'  # �
 |---|---|
 | `lint` | 脚本语法、HTML 骨架、12 个关键函数是否被误删、同名函数是否重复定义、调试接口是否只在 `?debug` 下挂载、体积上限 |
 | `smoke` | 单人 / 双人主流程；**双人战绩不串号**——只让 P1 开火时，P2 的击杀与得分必须保持 0 |
+| `duo-rescue` | 双人连携：护盾只在 118px 内生效且伤害恰好 ×0.75；队友在范围外救援进度不涨、中途离开会回退；停留满 2 秒按 50% 血量救起；两人都倒直接结算 |
 | `arena-edge` | 四方向顶边，玩家内距不得 ≤0（负值 = 已跑进虚空）；敌人不得落在轮廓外 |
 | `order` | 休闲/标准同一关每局完全一致，挑战每局不同；同局内同波次重建结果一致 |
 | `density` | 出怪数符合 `√(面积比)` 系数、场地不小于原矩形战场、宝箱落点不在墙里 |
