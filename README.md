@@ -300,6 +300,7 @@ trontank/
 - `69f87f0`：密度守恒：出怪数与宝箱按 `√(场地面积比)` 缩放，`CFG.arenaFill` 不再是隐藏难度旋钮；调试接口补 `enemyOnScreen`/`spawnPlanned`/`spawnLeft`/`chestBad`；新增 `tools/density.js`。
 - `21c685f` / **v0.2.1**：冒烟改成朝最近敌人转向再开火（`aimFire`），双人「站桩队友被打倒」时自动重开（最多 3 局）；调试接口补 `enemies[]`（仅 `?debug`）；删除不可靠的 `circleFire`/`fireUntil`。
 - `c6832bc` / **v0.2.2**：双人连携入库：新增 `tools/duo-rescue.js`（救援 + 护盾 20 项）；调试接口补 `duoShield`/`maxHp`/`rescueT` 与伤害注入 `hurt(idx, dmg)`——连携状态靠挨打构造不出来，只能注入。
+- `d0c72c3`：长局对象泄漏入库：新增 `tools/leak.js`（25 项）；调试接口补 `particles`/`floaters`/`rings`/`bombs`/`explosions`/`pickups` 计数与 `step(n, dt)`（同步推帧）、`restart(mode)`。游戏行为无变化。
 
 ## 10. 部署
 
