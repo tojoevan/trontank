@@ -296,9 +296,9 @@ trontank/
 - `5074503` / **v0.1.0**：P1/P2 个人战绩统计；连接手柄移入按键设置；操作说明精简；按键面板去掉垂直滚动条。
 - `135b924` / **v0.2.0**：HUD 状态卡重构（自适应宽度、炸弹前置、数值放大、右端渐隐）；小地图居中、公共信息回左上、靠近玩家淡化；暂停面板合并为「结束本局」、ESC 中途也出分享卡；地形池 10 种 + 长墙碎成锯齿错台；异形凸多边形战场 + 面积归一 1.12×；仅挑战难度随机地形顺序与布局。
 - `ffbde85`：回归验证入库（`tools/`，含双人玩法覆盖）；调试接口补 `players[]`/`bullets`/`enemyAlive`。
-- （本批）密度守恒：出怪数与宝箱按 `√(场地面积比)` 缩放，`CFG.arenaFill` 不再是隐藏难度旋钮；调试接口补 `enemyOnScreen`/`spawnPlanned`/`spawnLeft`/`chestBad`；新增 `tools/density.js`。
+- `69f87f0`：密度守恒：出怪数与宝箱按 `√(场地面积比)` 缩放，`CFG.arenaFill` 不再是隐藏难度旋钮；调试接口补 `enemyOnScreen`/`spawnPlanned`/`spawnLeft`/`chestBad`；新增 `tools/density.js`。
 - `21c685f` / **v0.2.1**：冒烟改成朝最近敌人转向再开火（`aimFire`），双人「站桩队友被打倒」时自动重开（最多 3 局）；调试接口补 `enemies[]`（仅 `?debug`）；删除不可靠的 `circleFire`/`fireUntil`。
-- （本批）双人连携入库：新增 `tools/duo-rescue.js`（救援 + 护盾 20 项）；调试接口补 `duoShield`/`maxHp`/`rescueT` 与伤害注入 `hurt(idx, dmg)`——连携状态靠挨打构造不出来，只能注入。
+- `c6832bc` / **v0.2.2**：双人连携入库：新增 `tools/duo-rescue.js`（救援 + 护盾 20 项）；调试接口补 `duoShield`/`maxHp`/`rescueT` 与伤害注入 `hurt(idx, dmg)`——连携状态靠挨打构造不出来，只能注入。
 
 ## 10. 部署
 
