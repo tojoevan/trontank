@@ -7793,8 +7793,24 @@ window.addEventListener('gamepadconnected', function (e) {
         return {
           state: state,
           wave: wave,
+          mode: mode,
+          difficulty: difficulty,
+          /* 每个玩家的明细：双人模式的战绩归属、存活、倒地救援都靠这里验证 */
+          players: players.map(function (p) {
+            return {
+              id: p.id,
+              x: Math.round(p.x), y: Math.round(p.y),
+              alive: p.alive, downed: !!p.downed, hp: Math.round(p.hp),
+              score: p.stats.score, kills: p.stats.kills,
+              weapon: p.weapon, ammo: p.ammo,
+              weaponCount: p.weapons ? p.weapons.length : 0
+            };
+          }),
           terrain: currentTerrain ? currentTerrain.name : '',
           obstacles: obstacles.length,
+          /* 在飞的子弹数：验证「开火链路是否通」比看击杀更直接，不会被敌人距离干扰 */
+          bullets: bullets.length,
+          enemyAlive: enemies.filter(function (e) { return e.alive !== false; }).length,
           chests: chests.length,
           mounts: mounts.length,
           arenaSides: arenaPts.length,
