@@ -5,7 +5,7 @@
 ## 用法
 
 ```bash
-./tools/verify.sh              # 全量：lint + 冒烟 + 边界 + 顺序 + 性能（约 2.5 分钟）
+./tools/verify.sh              # 全量：lint + 冒烟 + 边界 + 顺序 + 密度 + 性能（约 1.5 分钟）
 ./tools/verify.sh --fast       # 只跑 lint + 冒烟（约 1 分钟，改小东西时用）
 ./tools/verify.sh smoke order  # 只跑指定几项
 ```
@@ -20,6 +20,7 @@
 | `smoke` | 单人/双人主流程；**双人战绩不串号**（只让 P1 开火时 P2 击杀必须为 0） | 每次改完 |
 | `arena-edge` | 四方向顶边，玩家内距不得 ≤0；敌人不得跑到轮廓外 | 动碰撞、刷怪、地形 |
 | `order` | 休闲/标准同一关每局一致，挑战每局不同；同局内重建结果一致 | 动种子、地形池、洗牌 |
+| `density` | 出怪数符合 `√(面积比)` 系数、场地不小于原矩形战场、宝箱不落在墙里 | 动 `arenaFill`、数量公式、补给生成 |
 | `perf` | 切波同步耗时 <30ms、p95 帧间隔 <25ms | 加特效、加敌人、改渲染 |
 
 ## 环境变量
@@ -63,7 +64,7 @@ run('xxx 名称', async (t) => {
 
 所有用例依赖页面带 `?debug` 打开后挂上的 `window.__bqs`：
 
-- `current()` —— 状态快照：`state / wave / mode / difficulty / players[] / terrain / obstacles / bullets / enemyAlive / arenaSides / arenaBB / arenaFill / playerInset / enemyOut / arena[]`
+- `current()` —— 状态快照：`state / wave / mode / difficulty / players[] / terrain / obstacles / bullets / enemyAlive / enemyOnScreen / spawnPlanned / spawnLeft / chests / chestBad / mounts / arenaSides / arenaBB / arenaFill / playerInset / enemyOut / arena[]`
 - `startWave(n)` —— 直接跳到第 n 波
 - `reroll()` —— 重掷地形序列
 - `terrainForWave(n)` —— 只算地形不落地

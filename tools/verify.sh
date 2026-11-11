@@ -2,7 +2,7 @@
 # ==========================================================
 # 一条命令跑完回归验证
 # ----------------------------------------------------------
-#   ./tools/verify.sh              # 全量（lint + 冒烟 + 边界 + 顺序 + 性能）
+#   ./tools/verify.sh              # 全量（lint + 冒烟 + 边界 + 顺序 + 密度 + 性能）
 #   ./tools/verify.sh --fast       # 只跑 lint + 冒烟（改小东西时用）
 #   ./tools/verify.sh smoke order  # 只跑指定几项
 #
@@ -16,7 +16,7 @@ cd "$(dirname "$0")/.." || exit 1
 PORT="${PORT:-49460}"
 export BASE_URL="${BASE_URL:-http://127.0.0.1:$PORT/index.html?debug}"
 
-ALL=(smoke arena-edge order perf)
+ALL=(smoke arena-edge order density perf)
 
 # ---------- 参数解析 ----------
 SUITES=()

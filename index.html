@@ -2256,6 +2256,50 @@ window.addEventListener('gamepadconnected', function (e) {
     return best;
   }
 
+  /* 场地面积的「线性密度系数」= sqrt(本关场地面积 / 原矩形战场面积)。
+     ----------------------------------------------------------
+     为什么是开方而不是直接按面积比：
+       - 敌人从镜头边缘刷新并追向玩家，同屏密度只跟「出怪总量」有关，跟地图面积无关；
+       - 但地图越大，同样的敌人总量分摊到更大空间，清完一波后要跑的路、找补给的距离都会变长；
+       - 想「密度不变」，单位面积上的数量必须恒定，而距离是面积的平方根量级。
+     于是数量按 sqrt(a) 增长：面积变 4 倍时敌人翻倍，场均相遇距离不变。
+     CFG.arenaFill 因此只改形状大小，不再顺带改难度——否则它就是个隐藏难度旋钮。 */
+  function arenaDensityFactor() {
+    var area = Math.abs(arenaAreaSign(arenaPts)) / 2;
+    if (!(area > 1) || !(WW * WH > 1)) { return 1; }
+    /* 夹在 0.7~1.8：万一某次场地生成异常，数量也不会失控 */
+    return clamp(Math.sqrt(area / (WW * WH)), 0.7, 1.8);
+  }
+
+  /* 在场地内找一块空地放补给：避开障碍、玩家脚下与已有补给。
+     minGap 是与其它补给点的最小间距，避免额外补给全挤在一起。 */
+  function findSupplySpot(others, minGap) {
+    var box = arenaBox(30);
+    var gap2 = minGap * minGap;
+    for (var t = 0; t < 160; t++) {
+      var x = rand(box.minX, box.maxX);
+      var y = rand(box.minY, box.maxY);
+      if (arenaDist(x, y) < 72) { continue; }
+      var i, ok = true;
+      /* 不要正好刷在玩家脚下：会被瞬间连开，也看不出是「地图上的补给」 */
+      for (i = 0; i < players.length; i++) {
+        var px = players[i].x - x, py = players[i].y - y;
+        if (px * px + py * py < 130 * 130) { ok = false; break; }
+      }
+      if (!ok) { continue; }
+      for (i = 0; i < obstacles.length; i++) {
+        if (obstacleOverlapsCircle(obstacles[i], x, y, 46)) { ok = false; break; }
+      }
+      if (!ok) { continue; }
+      for (i = 0; i < others.length; i++) {
+        var dx = others[i].x - x, dy = others[i].y - y;
+        if (dx * dx + dy * dy < gap2) { ok = false; break; }
+      }
+      if (ok) { return { x: x, y: y }; }
+    }
+    return null;
+  }
+
   /* 把圆限制在场地内；r 省略时取 o.r */
   function confineToArena(o, r) {
     var rr = (r === undefined) ? (o.r || 0) : r;
@@ -2317,6 +2361,7 @@ window.addEventListener('gamepadconnected', function (e) {
   var obstacles = [];
   var hurtFlash = 0;
   var spawnList = [];
+  var spawnPlanned = 0;      // 本波计划出怪总数（仅用于调试接口核对节奏）
   var spawnTimer = 0;
   var wave = 0;
   var score = 0;
@@ -2472,6 +2517,25 @@ window.addEventListener('gamepadconnected', function (e) {
         arm: 0,
         spawnFx: 0,
         phase: ci * 2.1
+      });
+    }
+
+    /* 补给密度守恒：场地变大时宝箱跟着变多，否则「跑到最近补给」的距离被拉长。
+       墙体武器架不参与缩放——它必须贴着墙，随机撒点会浮在半空。 */
+    var wantChests = Math.round(chests.length * arenaDensityFactor());
+    var guard = 0;
+    while (chests.length < wantChests && guard++ < 12) {
+      var spot = findSupplySpot(chests.concat(mounts), 300);
+      if (!spot) { break; }
+      chests.push({
+        x: spot.x,
+        y: spot.y,
+        opened: false,
+        openT: 0,
+        respawn: 0,
+        arm: 0,
+        spawnFx: 0,
+        phase: chests.length * 2.1
       });
     }
   }
@@ -3987,20 +4051,9 @@ window.addEventListener('gamepadconnected', function (e) {
     pickups = [];
     pendingClear = false;
     sweepTail = 0;
-    /* 数量成长从 4+1.8n 放缓到 3+1.4n，再乘难度系数 */
-    var count = Math.round(3 + n * 1.4);
-    count = Math.round(count * (mode === 'duo' ? 1.35 : 1) * d.count);
-    if (bossWave) { count = Math.round(count * 0.55); }
-    count = Math.max(3, count);
 
     var i;
-    for (i = 0; i < count; i++) { spawnList.push(pickType(n)); }
-    if (bossWave) {
-      spawnList.splice(Math.min(2, spawnList.length), 0, 'boss');
-    }
-    spawnTimer = 0.45;
-
-    /* 地形：每 2 波重构一次，精英波固定开阔场；顺序按本局洗牌结果推进 */
+    /* 地形先建：本关场地面积决定出怪量，必须先知道面积再算数量 */
     var prevKey = currentTerrain ? currentTerrain.key : '';
     buildObstacles(n);
     var terrainChanged = (n > 1) && !!currentTerrain && (currentTerrain.key !== prevKey);
@@ -4010,6 +4063,19 @@ window.addEventListener('gamepadconnected', function (e) {
       }
       terrainFlash = 0.7;
     }
+
+    /* 数量成长从 4+1.8n 放缓到 3+1.4n，再乘难度系数、双人系数与场地面积系数 */
+    var count = Math.round(3 + n * 1.4);
+    count = Math.round(count * (mode === 'duo' ? 1.35 : 1) * d.count * arenaDensityFactor());
+    if (bossWave) { count = Math.round(count * 0.55); }
+    count = Math.max(3, count);
+
+    for (i = 0; i < count; i++) { spawnList.push(pickType(n)); }
+    if (bossWave) {
+      spawnList.splice(Math.min(2, spawnList.length), 0, 'boss');
+    }
+    spawnTimer = 0.45;
+    spawnPlanned = spawnList.length;
 
     /* 双人：上一波阵亡的队员在本波开始时复活 */
     for (i = 0; i < players.length; i++) {
@@ -7811,7 +7877,25 @@ window.addEventListener('gamepadconnected', function (e) {
           /* 在飞的子弹数：验证「开火链路是否通」比看击杀更直接，不会被敌人距离干扰 */
           bullets: bullets.length,
           enemyAlive: enemies.filter(function (e) { return e.alive !== false; }).length,
+          /* 本波计划出怪数 / 还没出场的数量：用来核对「出怪节奏与地图大小是否匹配」 */
+          spawnPlanned: spawnPlanned,
+          spawnLeft: spawnList.length,
+          /* 当前视野内的敌人数：判断「密度」要看这个，而不是全场总数。
+             地图放大后敌人在镜头外被稀释观感不明显，真正影响体感的是同屏数量 */
+          enemyOnScreen: enemies.filter(function (e) {
+            return e.alive !== false &&
+              e.x > cam.x - 40 && e.x < cam.x + W + 40 &&
+              e.y > cam.y - 40 && e.y < cam.y + H + 40;
+          }).length,
           chests: chests.length,
+          /* 落在障碍里或场外的宝箱数：补给密度守恒会额外撒点，得能验证撒得对不对 */
+          chestBad: chests.filter(function (c) {
+            if (arenaDist(c.x, c.y) < 20) { return true; }
+            for (var i = 0; i < obstacles.length; i++) {
+              if (obstacleOverlapsCircle(obstacles[i], c.x, c.y, 12)) { return true; }
+            }
+            return false;
+          }).length,
           mounts: mounts.length,
           arenaSides: arenaPts.length,
           world: { w: WW, h: WH },
