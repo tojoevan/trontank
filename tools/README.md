@@ -5,7 +5,7 @@
 ## 用法
 
 ```bash
-./tools/verify.sh              # 全量：lint + 冒烟 + 边界 + 顺序 + 密度 + 性能（约 1.5 分钟）
+./tools/verify.sh              # 全量：lint + 冒烟 + 连携 + 边界 + 顺序 + 密度 + 泄漏 + 性能（约 1.5 分钟）
 ./tools/verify.sh --fast       # 只跑 lint + 冒烟（约 1 分钟，改小东西时用）
 ./tools/verify.sh smoke order  # 只跑指定几项
 ```
@@ -22,6 +22,7 @@
 | `arena-edge` | 四方向顶边，玩家内距不得 ≤0；敌人不得跑到轮廓外 | 动碰撞、刷怪、地形 |
 | `order` | 休闲/标准同一关每局一致，挑战每局不同；同局内重建结果一致 | 动种子、地形池、洗牌 |
 | `density` | 出怪数符合 `√(面积比)` 系数、场地不小于原矩形战场、宝箱不落在墙里 | 动 `arenaFill`、数量公式、补给生成 |
+| `leak` | 长局对象泄漏：停火后子弹归零、特效落回地板；10 个回合各数组峰值不超上限；**每局重开起点完全一致**（`startGame` 漏清一个数组就会漂移）。用 `__bqs.step()` 同步推 6000 帧，不靠真等 | 加对象池、加特效、动 `startGame` |
 | `perf` | 切波同步耗时 <30ms、p95 帧间隔 <25ms | 加特效、加敌人、改渲染 |
 
 ## 环境变量
@@ -56,18 +57,24 @@ run('xxx 名称', async (t) => {
 
 `t.check(label, ok, detail)` / `t.eq(label, actual, expected)` / `t.info(msg)`，`run()` 会自动收尾并设置退出码。
 
-## 两个坑
+## 三个坑
 
 1. **不要用固定时长判断「能不能打到人」**：敌人分布是随机的，固定时长跑出来的失败是运气不是回归。用 `fireUntil()` 那种「达标即停」的写法。
 2. **停火后要等一会再取基线**：最后一轮打出的子弹还在飞，落地补刀仍算原玩家的击杀。不等就把「残留子弹结算」误判成「抢击杀」（曾经因此出现过一次假失败）。
+3. **「重开 + 读快照」必须在同一个 `evaluate` 里做**：真实 rAF 循环是同时跑着的，两次 `evaluate` 之间隔了一帧，足够人物打出一发子弹。分两步写，测到的「起点」永远是「起点 + 一帧」，会假报数组漂移（`leak.js` 第一版就栽在这）。
+
+另外，**瞬时对象的寿命只有 0.3~0.95 秒**，量峰值时按 60 帧一采很容易落在「刚散干净」的瞬间，得小步推进、一出现就取样。
 
 ## 调试接口
 
 所有用例依赖页面带 `?debug` 打开后挂上的 `window.__bqs`：
 
-- `current()` —— 状态快照：`state / wave / mode / difficulty / players[] / terrain / obstacles / bullets / enemyAlive / enemyOnScreen / spawnPlanned / spawnLeft / chests / chestBad / mounts / arenaSides / arenaBB / arenaFill / playerInset / enemyOut / arena[]`
+- `current()` —— 状态快照：`state / wave / mode / difficulty / players[] / terrain / obstacles / bullets / enemyAlive / enemies[] / enemyOnScreen / spawnPlanned / spawnLeft / chests / chestBad / mounts / particles / floaters / rings / bombs / explosions / pickups / duoShield / arenaSides / arenaBB / arenaFill / playerInset / enemyOut / arena[]`
 - `startWave(n)` —— 直接跳到第 n 波
 - `reroll()` —— 重掷地形序列
 - `terrainForWave(n)` —— 只算地形不落地
+- `hurt(idx, dmg)` —— 给某个玩家注入伤害（走真实 `hurtPlayer`，护盾减伤照常生效）
+- `step(n, dt)` —— 同步推进 n 帧逻辑（默认 dt=1/60），**只跑 update 不渲染**；长局验证靠它，6000 帧只要几十毫秒
+- `restart(mode)` —— 重开一局，用于验证「换局是否把数组清干净」
 
-`players[]` 里有 `id / x / y / alive / downed / hp / score / kills / weapon / ammo / weaponCount`，双人的战绩归属全靠它验证。
+`players[]` 里有 `id / x / y / alive / downed / hp / maxHp / score / kills / weapon / ammo / weaponCount / rescueT`，双人的战绩归属与救援手感全靠它验证。

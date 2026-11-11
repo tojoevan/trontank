@@ -7906,6 +7906,14 @@ window.addEventListener('gamepadconnected', function (e) {
             return false;
           }).length,
           mounts: mounts.length,
+          /* 瞬时对象的规模：长局跑几千帧后这些数组若只增不减，帧率会缓慢坍塌。
+             这类问题的特征就是「玩了半小时才开始卡」，不测就发现不了 */
+          particles: particles.length,
+          floaters: floaters.length,
+          rings: rings.length,
+          bombs: bombs.length,
+          explosions: explosions.length,
+          pickups: pickups.length,
           /* 背靠背护盾是否生效：减伤 25% 是纯计算量，看不到就只能靠肉眼猜 */
           duoShield: !!duoShield,
           arenaSides: arenaPts.length,
@@ -7937,6 +7945,20 @@ window.addEventListener('gamepadconnected', function (e) {
         if (!p) { return false; }
         hurtPlayer(p, dmg || 9999);
         return true;
+      },
+      /* 按固定步长推进逻辑帧，用于「长局对象泄漏」验证：
+         真实 rAF 跑 3000 帧要 50 秒，这里同步跑完只要几十毫秒。
+         只推进 update()，不渲染——渲染性能由 perf 用例单独守。 */
+      step: function (n, dt) {
+        var total = Math.min(Math.max(0, n | 0), 200000);
+        var d = dt || 1 / 60;
+        for (var i = 0; i < total; i++) { update(d); }
+        return total;
+      },
+      /* 重开一局，用于验证「换局是否把数组清干净」 */
+      restart: function (m) {
+        startGame(m || mode || 'solo');
+        return state;
       }
     };
   }
